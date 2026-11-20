@@ -773,6 +773,7 @@ function render() {
   const p = P();
   if (!p) { document.body.dataset.theme = 'quest'; app.innerHTML = `<div class="onboard"><div class="card ob-form" style="max-width:520px;margin:40px auto"><h2>Ваш профиль ещё не создан</h2><p class="muted">Профили детей видны вам как результаты. Создайте свой профиль, чтобы заниматься самой.</p><button class="btn wide" data-act="makeMine">+ Создать мой профиль</button>${otherProfiles().length ? '<button class="btn ghost wide" data-act="go" data-arg="results">👦 Посмотреть результаты</button>' : ''}${window.EQ_SETTINGS_HTML ? window.EQ_SETTINGS_HTML() : ''}</div></div>` + modalHTML(); if (UI.view === 'results') { app.innerHTML = `<div class="content" style="margin:0 auto"><button class="btn ghost small" data-act="makeMine">+ Создать мой профиль</button>${viewResults()}</div>`; } return; }
   document.body.dataset.theme = p.theme || 'quest'; document.body.dataset.kind = p.kind;
+  if (!UI.autoTr && UI.mode !== 'teacher' && p.words.some(w => !w.ru)) { UI.autoTr = true; setTimeout(() => translateMissing(true), 1500); }
   if (UI.mode !== 'teacher') S.profiles.filter(canSave).forEach(q => { if (migrateSeeds(q)) setTimeout(() => save(q), 0); });
   if (UI.game) {
     const t = UI.game.type;
@@ -1039,8 +1040,9 @@ async function freeFill(w) {
 }
 async function autoFill(w) { if (AI) { try { await aiFillWord(w); if (w.ru) return true; } catch (e) { } } return freeFill(w); }
 async function ensureTranslations(ids) { const p = P(); const ws = ids.map(id => p.words.find(w => w.id === id)).filter(w => w && !w.ru); for (const w of ws) await autoFill(w); if (ws.length) save(); return ids.filter(id => { const w = p.words.find(x => x.id === id); return w && w.ru; }); }
-async function translateMissing() {
-  const p = P(), ws = p.words.filter(w => !w.ru); if (!ws.length) return;
+async function translateMissing(silent) {
+  const p = P(), ws = p.words.filter(w => !w.ru); if (!ws.length || UI.translating) return;
+  if (silent) toast(`🌐 Перевожу слова без перевода: ${ws.length}…`);
   UI.translating = true; let ok = 0;
   for (let i = 0; i < ws.length; i++) { const el = $('#trProgress'); if (el) el.textContent = `Перевожу: ${i + 1} / ${ws.length}…`; if (await autoFill(ws[i])) ok++; if (i % 5 === 4) save(); }
   UI.translating = false; save(); render();
