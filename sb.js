@@ -182,7 +182,7 @@
     FID = f.fid; ROLE = f.frole; localStorage.setItem('eq.fam.' + USER.id, FID);
     window.EQ_LS_KEY = 'eq.data.' + FID;
     const db = { doc: docRef, collection: p => colRef(p) };
-    const user = { isOwner: async () => ROLE === 'owner' || ROLE === 'member', canEdit: async () => ROLE !== 'teacher', can: async () => !!ROLE, id: async () => USER.id, me: async () => ({ id: USER.id, name: USER.email }) };
+    const user = { role: async () => ROLE, isOwner: async () => ROLE === 'owner' || ROLE === 'member', canEdit: async () => ROLE !== 'teacher', can: async () => !!ROLE, id: async () => USER.id, me: async () => ({ id: USER.id, name: USER.email }) };
     window.claude = { use: async n => n === 'db' ? db : n === 'user' ? user : n === 'sample' ? ((await aiCheck()) ? sample : null) : null };
     realtime();
     const s = document.createElement('script'); s.src = 'app.js'; s.onload = () => loadAccess(); document.body.appendChild(s);

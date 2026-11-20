@@ -60,7 +60,23 @@ function migrateSeeds(p) {
   (p.kind === 'child' ? D.KID_WORDS : D.ADULT_WORDS).forEach(a => { if (!have.has(norm(a[0]))) p.words.push(seedWord(a)); });
   p.seedV = ver; return true;
 }
-const P = () => S && S.profiles.find(p => p.id === S.activeId) || (S && S.profiles[0]) || null;
+function isMine(p) { if (!Cloud.uid) return true; if (Cloud.role === 'member') return p.uid === Cloud.uid; return p.uid === Cloud.uid || (!p.uid && p.kind !== 'child'); }
+function canSave(p) { return !Cloud.uid || isMine(p) || (Cloud.role === 'owner' && !p.uid); }
+const myProfiles = () => S ? S.profiles.filter(isMine) : [];
+const otherProfiles = () => S ? S.profiles.filter(p => !isMine(p)) : [];
+const P = () => { if (!S) return null; const m = myProfiles(); return m.find(p => p.id === S.activeId) || m[0] || null; };
+function claimProfiles() {
+  if (!S || !Cloud.uid) return;
+  const changed = [];
+  if (Cloud.role === 'owner') S.profiles.forEach(p => { if (!p.uid && p.kind !== 'child') { p.uid = Cloud.uid; changed.push(p); } });
+  if (Cloud.role === 'member' && !S.profiles.some(p => p.uid === Cloud.uid)) {
+    let c = S.profiles.find(p => !p.uid && p.kind === 'child');
+    if (!c) { c = newProfile('child', { name: 'Ученик' }); S.profiles.push(c); }
+    c.uid = Cloud.uid; changed.push(c);
+  }
+  const mine = myProfiles(); if (mine.length && !mine.some(p => p.id === S.activeId)) S.activeId = mine[0].id;
+  changed.forEach(p => save(p));
+}
 const profById = id => S.profiles.find(p => p.id === id);
 const isKid = (p = P()) => p && p.kind === 'child';
 const lvlRank = l => Math.max(0, LEVELS.indexOf(l));
@@ -86,11 +102,12 @@ const Cloud = {
     try { [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]); } catch (e) { }
     this.db = db; this.user = user;
     if (user) { try { this.owner = !!(await user.isOwner()); } catch (e) { this.owner = true; } }
+    if (user && window.EQ_STANDALONE) { try { this.uid = await user.id(); this.role = user.role ? await user.role() : (this.owner ? 'owner' : 'teacher'); } catch (e) { } }
     if (!db) { setSync('local'); return; }
     if (!this.owner) { UI.mode = 'teacher'; Teacher.start(); return; }
     setSync('loading');
     const t = setTimeout(() => setSync('slow'), 10000);
-    try { await this.load(); clearTimeout(t); this.on = true; setSync('cloud'); this.subscribe(); this.subscribeTasks(); }
+    try { await this.load(); clearTimeout(t); this.on = true; claimProfiles(); setSync('cloud'); this.subscribe(); this.subscribeTasks(); }
     catch (e) { clearTimeout(t); console.warn('cloud', e); setSync('local'); }
   },
   profDoc(p) { const o = Object.assign({}, p); delete o.words; o.summary = wordSummary(p); return JSON.parse(JSON.stringify(o)); },
@@ -159,6 +176,7 @@ const Cloud = {
     const hm = hash(JSON.stringify(Object.assign({}, m, { updatedAt: 0 })));
     if (this.hashes.meta !== hm) { await root.set(m); this.hashes.meta = hm; }
     for (const p of S.profiles) {
+      if (!canSave(p)) continue;
       const pd = this.profDoc(p); const h = hash(JSON.stringify(pd));
       if (this.hashes['p/' + p.id] !== h) { await root.collection('profiles').doc(p.id).set(pd); this.hashes['p/' + p.id] = h; }
       const size = 120, n = Math.max(1, Math.ceil(p.words.length / size));
@@ -298,26 +316,31 @@ const STEP_META = {
   match: ['🧩', 'Word Match', 'Соедини слово и перевод'],
   memory: ['🃏', 'Memory Game', 'Найди пары'],
   read: ['📖', 'Reading', 'Прочитай текст и ответь на вопросы'],
+  sentences: ['✍️', 'Предложения с новыми словами', 'Собери и составь фразы с сегодняшними словами'],
+  lesson: ['📘', 'Урок дня: теория', ''],
+  consolidate: ['🔁', 'Закрепление темы', ''],
   mixed: ['🎲', 'Mixed Challenge', 'Задания по всем темам вперемешку'],
   dictation: ['✍️', 'Диктант', 'Запиши услышанные предложения'],
   boss: ['👹', 'Daily Boss', 'Микс всех времён и тем — каждый день']
 };
 function planFor(p, date = today()) {
-  if (p.plans[date]) return p.plans[date];
+  if (p.plans[date] && (p.plans[date].v === 3 || p.plans[date].steps.some(s => s.done))) return p.plans[date];
   const kid = isKid(p), short = p.minutes <= (kid ? 15 : 20), odd = parseInt(hash(date), 10) % 2;
   const focus = focusTopic(p), weak = weakTopics(p).filter(x => x !== focus)[0];
   let keys;
-  if (kid) keys = short ? ['vocab', 'picture', 'boss'] : ['vocab', 'picture', 'grammar', 'listen', odd ? 'match' : 'memory', 'boss'];
-  else keys = short ? ['vocab', 'grammar', 'boss'] : ['vocab', 'grammar', ...(weak ? ['drill'] : []), 'listen', odd ? 'builder' : 'translate', AI ? (odd ? 'speak' : 'diary') : 'error', ...(p.hard ? [AI ? 'error' : 'mixed', 'read'] : []), 'boss'];
-  const steps = keys.map(k => ({ k, topic: k === 'grammar' ? focus : k === 'drill' ? weak : null, done: false }));
-  p.plans[date] = { date, steps };
+  const intensive = !kid && p.intensive !== false;
+  if (kid) keys = short ? ['vocab', 'picture', 'boss'] : ['vocab', 'picture', 'grammar', 'match', 'read', 'boss'];
+  else if (intensive) keys = ['vocab', 'sentences', 'lesson', 'grammar', 'consolidate', ...(weak ? ['drill'] : []), 'read', 'listen', AI ? (odd ? 'speak' : 'diary') : 'error', ...(p.hard ? ['mixed'] : []), 'boss'];
+  else keys = short ? ['vocab', 'grammar', 'boss'] : ['vocab', 'grammar', ...(weak ? ['drill'] : []), 'listen', odd ? 'builder' : 'translate', AI ? (odd ? 'speak' : 'diary') : 'error', ...(p.hard ? ['mixed', 'read'] : []), 'boss'];
+  const steps = keys.map(k => ({ k, topic: ['grammar', 'lesson', 'consolidate'].includes(k) ? focus : k === 'drill' ? weak : null, done: false }));
+  p.plans[date] = { date, steps, v: 3 };
   Object.keys(p.plans).forEach(d => { if (daysBetween(d, date) > 60) delete p.plans[d]; });
   return p.plans[date];
 }
 function stepInfo(s) {
   const m = STEP_META[s.k] || ['⭐', s.k, ''];
   let sub = m[2];
-  if (s.k === 'grammar' || s.k === 'drill') sub = TOP[s.topic] ? TOP[s.topic].name + ' · ' + TOP[s.topic].ru : '';
+  if (['grammar', 'drill', 'lesson', 'consolidate'].includes(s.k)) sub = TOP[s.topic] ? TOP[s.topic].name + ' · ' + TOP[s.topic].ru : '';
   if (s.k === 'vocab') { const p = P(); sub = `${Math.min(newLeft(p), newPool(p).length)} новых + ${Math.min(40, dueWords(p).length)} на повторение`; }
   return { icon: m[0], title: m[1], sub };
 }
@@ -331,7 +354,7 @@ function introduced(p) { const w = p.words.filter(x => x.stage > 0 && x.ru); ret
 function distract(pool, w, field, n = 3) { const seen = new Set([norm(w[field])]); const out = []; for (const x of shuffle(pool)) { const v = x[field]; if (!v || seen.has(norm(v))) continue; seen.add(norm(v)); out.push(v); if (out.length >= n) break; } return out; }
 function qGrammar(t, it) {
   const pr = typeof P === 'function' ? P() : null;
-  if (pr && pr.hard && !UI.noHardInput && Math.random() < 0.5) return { kind: 'input', prompt: it[0], sub: t.name + ' · 🔥 впиши ответ', answer: it[1], alts: [it[1]], explain: it[3] || t.tip, tag: { topic: t.id } };
+  if (pr && pr.hard && !isKid(pr) && !UI.noHardInput && Math.random() < 0.5) return { kind: 'input', prompt: it[0], sub: t.name + ' · 🔥 впиши ответ', answer: it[1], alts: [it[1]], explain: it[3] || t.tip, tag: { topic: t.id } };
   return { kind: 'mcq', prompt: it[0], sub: t.name, options: shuffle(it[2]), answer: it[1], explain: it[3] || t.tip, tag: { topic: t.id } };
 }
 function topicQs(id, n) { const t = TOP[id]; return shuffle(t.items).slice(0, n || t.items.length).map(it => qGrammar(t, it)); }
@@ -379,13 +402,13 @@ function studiedTopics(p) { const c = curriculum(p); const f = c.indexOf(focusTo
 function bossQs(p) {
   const qs = [];
   if (isKid(p)) {
-    curriculum(p).forEach(id => { const it = pick(TOP[id].items); qs.push(qGrammar(TOP[id], it)); });
+    shuffle(studiedTopics(p)).slice(0, 5).forEach(id => qs.push(qGrammar(TOP[id], pick(TOP[id].items))));
   } else {
     TENSES.forEach(t => shuffle(t.items).slice(0, p.hard ? 2 : 1).forEach(it => qs.push(qGrammar(t, it))));
     shuffle(studiedTopics(p).filter(id => !TOP[id].tense)).slice(0, 3).forEach(id => qs.push(qGrammar(TOP[id], pick(TOP[id].items))));
   }
   const pool = wordPool(p);
-  shuffle(introduced(p)).slice(0, 3).forEach(w => qs.push(qWordMCQ(w, pool, rnd(2) ? 'ru' : 'en')));
+  shuffle(introduced(p)).slice(0, 3).forEach(w => qs.push(qWordMCQ(w, pool, isKid(p) ? 'en' : rnd(2) ? 'ru' : 'en')));
   return shuffle(qs);
 }
 function mixedQs(p, n = 12) {
@@ -439,7 +462,7 @@ function startGame(id, opt = {}) {
     case 'aiwords': return aiWordsGame(opt);
     case 'missing': { const qs = shuffle(p.words.filter(w => w.ru)).map(w => qMissing(w, pool)).filter(Boolean).slice(0, 8); return T('Missing Word', '🕳️', qs.length ? qs : mixedQs(p, 6)); }
     case 'builder': { const tps = topic ? [topic] : studiedTopics(p); const tq = shuffle(tps.flatMap(id => TOP[id].examples.map(e => qBuilderTopic(id, e)))); const wq = topic ? [] : shuffle(ws).map(qBuilderWord).filter(Boolean).slice(0, 2); return T('Sentence Builder', '🧱', shuffle(tq.slice(0, 6 - wq.length).concat(wq))); }
-    case 'battle': case 'grammar': case 'drill': { const t = topic || focusTopic(p); const qs = topicQs(t, isKid(p) ? 6 : p.hard ? 12 : 8); return T('Grammar Battle · ' + TOP[t].name, '⚔️', qs, { topic: t }); }
+    case 'battle': case 'grammar': case 'drill': { const t = topic || focusTopic(p); const qs = topicQs(t, isKid(p) ? 5 : p.hard ? 12 : 8); return T('Grammar Battle · ' + TOP[t].name, '⚔️', qs, { topic: t }); }
     case 'speed': return T('Speed Challenge', '⚡', mixedQs(p, 12).filter(q => q.kind === 'mcq' && !q.listen), { timer: P().hard ? 7 : 10 });
     case 'translate': return T('Translation Race', '🏁', shuffle(ws).slice(0, 10).map(qType), { race: true });
     case 'detective': return T('Word Detective', '🕵️', shuffle(ws).slice(0, 8).map(qDetective));
@@ -454,8 +477,30 @@ function startGame(id, opt = {}) {
     case 'placement': return runPlacement(p);
   }
 }
+function recentNew(p) { const ids = (p.introIds && p.introIds[today()]) || []; let ws = ids.map(id => p.words.find(w => w.id === id)).filter(w => w && w.ru); if (ws.length < 3) ws = ws.concat(p.words.filter(w => w.stage > 0 && w.ru && !ws.includes(w)).sort((a, b) => (b.last || '') > (a.last || '') ? 1 : -1)).slice(0, Math.max(5, ws.length)); return ws.slice(0, 8); }
+function sentencesGame(opt) {
+  const p = P(), ws = recentNew(p); if (!ws.length) return toast('Сначала выучите новые слова в шаге «Vocabulary Quest»');
+  const qs = ws.map(qBuilderWord).filter(Boolean).slice(0, 5);
+  ws.slice(0, 3).forEach(w => qs.push({ kind: 'free', prompt: `Составь своё предложение со словом «${w.en}»`, sub: w.ru, word: w.en, tag: { word: w.id } }));
+  runQuiz({ title: 'Предложения с новыми словами', icon: '✍️', questions: qs, step: opt.step });
+}
+function consolidateGame(opt) {
+  const p = P(), id = opt.topic || focusTopic(p), t = TOP[id];
+  const qs = shuffle(t.examples).slice(0, 3).map(e => qBuilderTopic(id, e)).concat(t.errors.map(e => qError(id, e)), shuffle(t.items).slice(0, 5).map(it => isKid(p) ? qGrammar(t, it) : { kind: 'input', prompt: it[0], sub: t.name + ' · впиши ответ', answer: it[1], alts: [it[1]], explain: it[3] || t.tip, tag: { topic: id } }));
+  runQuiz({ title: 'Закрепление · ' + t.name, icon: '🔁', questions: shuffle(qs), step: opt.step, topic: id });
+}
+function pickText(p) {
+  const kid = isKid(p), done = p.readDone || {}, r = lvlRank(p.level);
+  let pool = D.READING.filter(x => kid ? x.kid : !x.kid);
+  if (!kid) { const fit = pool.filter(x => lvlRank(x.level) <= r + 1 && lvlRank(x.level) >= r - 1); if (fit.length) pool = fit; if (p.intensive !== false && r >= 2) { const ie = pool.filter(x => x.ielts); if (ie.some(x => !done[x.id])) pool = ie; } }
+  return pool.find(x => !done[x.id]) || pool[parseInt(hash(today()), 10) % pool.length];
+}
 function runStep(i) {
   const p = P(), pl = planFor(p), s = pl.steps[i]; if (!s) return;
+  if (s.k === 'lesson') { UI.lessonStep = i; return go('topic', s.topic); }
+  if (s.k === 'read') { const t = pickText(p); UI.readStep = i; return go('reader', 'reader:' + t.id); }
+  if (s.k === 'sentences') return sentencesGame({ step: i });
+  if (s.k === 'consolidate') return consolidateGame({ step: i, topic: s.topic });
   const map = { vocab: 'flash', grammar: 'grammar', drill: 'drill' };
   startGame(map[s.k] || s.k, { topic: s.topic, step: i });
 }
@@ -692,15 +737,18 @@ function memFlip(i) {
 function runPlacement(p) {
   UI.noHardInput = true; setTimeout(() => { UI.noHardInput = false; }, 0);
   let qs;
-  if (isKid(p)) { const pk = kidPack(); qs = shuffle(pk).slice(0, 5).map(w => qPicture(w, pk)).concat(['tobe', 'ps', 'pas', 'pc', 'fs'].map(id => qGrammar(TOP[id], pick(TOP[id].items)))); }
-  else qs = D.PLACEMENT.map(a => ({ kind: 'mcq', prompt: a[0], sub: 'Тест уровня', options: shuffle(a[2]), answer: a[1], explain: '', lvl: a[3] }));
-  runQuiz({ title: 'Тест уровня', icon: '📏', questions: qs, noXP: true, replay: false, onFinish: r => {
+  if (isKid(p)) {
+    const pk = kidPack();
+    qs = shuffle(pk).slice(0, 4).map(w => qPicture(w, pk)).concat(shuffle(pk).slice(0, 3).map(w => qWordMCQ(w, pk, 'en')), ['tobe', 'have', 'ps', 'pas', 'there'].map(id => qGrammar(TOP[id], pick(TOP[id].items))));
+    qs.forEach(q => { if (q.kind !== 'mcq') q.kind = 'mcq'; });
+  } else qs = D.PLACEMENT.map(a => ({ kind: 'mcq', prompt: a[0], sub: 'Тест уровня', options: shuffle(a[2]), answer: a[1], explain: '', lvl: a[3] }));
+  runQuiz({ title: isKid(p) ? 'Тест: что ты уже знаешь?' : 'Тест уровня', icon: '📏', questions: qs, noXP: true, replay: false, onFinish: r => {
     let lvl; const s = r.score;
-    if (isKid(p)) lvl = s <= 5 ? 'A1' : s <= 8 ? 'A1' : 'A2';
+    if (isKid(p)) { lvl = s >= 10 ? 'A2' : 'A1'; p.newPerDay = s <= 4 ? 3 : s <= 8 ? 4 : 5; p.kidStart = s <= 4 ? 'beginner' : s <= 8 ? 'basic' : 'good'; }
     else lvl = s <= 4 ? 'A1' : s <= 8 ? 'A2' : s <= 12 ? 'B1' : s <= 15 ? 'B2' : 'C1';
     p.level = lvl; p.tests.push({ date: today(), level: lvl, score: s, total: r.total });
     delete p.plans[today()];
-  }, resultHTML: () => `<div class="level-badge">Ваш уровень: <b>${p.level}</b></div><p class="muted small">Программа на сегодня перестроена под этот уровень.</p>` });
+  }, resultHTML: () => isKid(p) ? `<div class="level-badge">${p.kidStart === 'beginner' ? '🌱 Начинаем с самых основ!' : p.kidStart === 'basic' ? '⭐ Ты уже кое-что знаешь!' : '🚀 Отличный результат!'}</div><p class="muted small">Уровень: <b>${p.level}</b>. Программа подстроена под тебя: ${p.newPerDay} новых слова в день.</p>` : `<div class="level-badge">Ваш уровень: <b>${p.level}</b></div><p class="muted small">Программа на сегодня перестроена под этот уровень.</p>` });
 }
 
 /* ---------- Каркас и навигация ---------- */
@@ -710,38 +758,46 @@ const NAV = [
   ['arena', '👨‍👩‍👦', 'Family Arena'], ['progress', '📊', 'Прогресс'], ['ach', '🏆', 'Достижения'], ['settings', '⚙️', 'Настройки']
 ];
 const MOBILE_NAV = ['home', 'vocab', 'grammar', 'games', 'more'];
+function navFor(p) {
+  let n = NAV;
+  if (isKid(p)) n = NAV.filter(x => ['home', 'vocab', 'grammar', 'games', 'read', 'tasks', 'ach', 'settings'].includes(x[0]));
+  if (otherProfiles().length && Cloud.role !== 'member') n = n.slice(0, 1).concat([['results', '👦', 'Результаты: ' + otherProfiles().map(q => q.name).join(', ')]], n.slice(1));
+  return n;
+}
 function go(view, arg) { UI.view = view; UI.arg = arg == null ? null : arg; UI.menu = false; render(); window.scrollTo(0, 0); }
 function render() {
   const app = $('#app'); if (!app) return;
   UI.needRender = false;
   if (UI.mode === 'teacher') { document.body.dataset.theme = 'quest'; app.innerHTML = Teacher.render() + modalHTML(); return; }
   if (!S || !S.profiles.length) { document.body.dataset.theme = 'quest'; app.innerHTML = viewOnboard(); return; }
-  const p = P(); document.body.dataset.theme = p.theme || 'quest'; document.body.dataset.kind = p.kind;
-  if (UI.mode !== 'teacher') S.profiles.forEach(q => { if (migrateSeeds(q)) setTimeout(() => save(q), 0); });
+  const p = P();
+  if (!p) { document.body.dataset.theme = 'quest'; app.innerHTML = `<div class="onboard"><div class="card ob-form" style="max-width:520px;margin:40px auto"><h2>Ваш профиль ещё не создан</h2><p class="muted">Профили детей видны вам как результаты. Создайте свой профиль, чтобы заниматься самой.</p><button class="btn wide" data-act="makeMine">+ Создать мой профиль</button>${otherProfiles().length ? '<button class="btn ghost wide" data-act="go" data-arg="results">👦 Посмотреть результаты</button>' : ''}${window.EQ_SETTINGS_HTML ? window.EQ_SETTINGS_HTML() : ''}</div></div>` + modalHTML(); if (UI.view === 'results') { app.innerHTML = `<div class="content" style="margin:0 auto"><button class="btn ghost small" data-act="makeMine">+ Создать мой профиль</button>${viewResults()}</div>`; } return; }
+  document.body.dataset.theme = p.theme || 'quest'; document.body.dataset.kind = p.kind;
+  if (UI.mode !== 'teacher') S.profiles.filter(canSave).forEach(q => { if (migrateSeeds(q)) setTimeout(() => save(q), 0); });
   if (UI.game) {
     const t = UI.game.type;
     app.innerHTML = (t === 'quiz' ? renderQuiz() : t === 'flash' ? renderFlash() : t === 'match' ? renderMatch() : renderMemory()) + modalHTML();
     if (t === 'quiz') { const inp = $('#qInput'); if (inp && !UI.game.answered) inp.focus(); const nb = $('#nextBtn'); if (nb) nb.focus({ preventScroll: true }); }
     return;
   }
-  const V = { home: viewHome, vocab: viewVocab, grammar: viewGrammar, topic: viewTopic, games: viewGames, listen: viewListen, read: viewRead, reader: viewReader, ai: viewAI, tasks: viewTasks, arena: viewArena, progress: viewProgress, ach: viewAch, settings: viewSettings };
+  const V = { results: viewResults, home: viewHome, vocab: viewVocab, grammar: viewGrammar, topic: viewTopic, games: viewGames, listen: viewListen, read: viewRead, reader: viewReader, ai: viewAI, tasks: viewTasks, arena: viewArena, progress: viewProgress, ach: viewAch, settings: viewSettings };
   const body = (V[UI.view] || viewHome)();
   const pending = myTasks(p).filter(t => !Cloud.submissions[t.id]).length;
   app.innerHTML = `
   <aside class="side">
     <div class="brand"><div class="logo">${p.theme === 'hc' ? 'H&C' : p.theme === 'blade' ? '刀' : 'EQ'}</div><div><b>ENGLISH QUEST</b><small>${p.theme === 'hc' ? 'Human &amp; Capital edition' : 'Our Family English Adventure'}</small></div></div>
-    <nav>${NAV.map(n => `<button class="nav-i ${UI.view === n[0] || (UI.view === 'topic' && n[0] === 'grammar') || (UI.view === 'reader' && n[0] === 'read') ? 'on' : ''}" data-act="go" data-arg="${n[0]}"><span>${n[1]}</span>${n[2]}${n[0] === 'tasks' && pending ? `<em class="badge">${pending}</em>` : ''}${n[0] === 'vocab' && dueWords(p).length ? `<em class="badge soft">${dueWords(p).length}</em>` : ''}</button>`).join('')}</nav>
+    <nav>${navFor(p).map(n => `<button class="nav-i ${UI.view === n[0] || (UI.view === 'topic' && n[0] === 'grammar') || (UI.view === 'reader' && n[0] === 'read') ? 'on' : ''}" data-act="go" data-arg="${n[0]}"><span>${n[1]}</span>${n[2]}${n[0] === 'tasks' && pending ? `<em class="badge">${pending}</em>` : ''}${n[0] === 'vocab' && dueWords(p).length ? `<em class="badge soft">${dueWords(p).length}</em>` : ''}</button>`).join('')}</nav>
     <div class="sync" id="syncDot" data-s="${Cloud.status}" title="${esc(syncLabel())}"><i></i><span>${esc(syncLabel(true))}</span></div>
   </aside>
   <main class="main">
     <header class="top">
-      <div class="profiles">${S.profiles.map(q => `<button class="pchip ${q.id === p.id ? 'on' : ''}" data-act="switchP" data-arg="${q.id}"><span class="av">${q.avatar}</span><span class="pn">${esc(q.name)}<small>${q.level} · ур. ${levelOf(q.xp)}</small></span></button>`).join('')}</div>
+      <div class="profiles">${myProfiles().map(q => `<button class="pchip ${q.id === p.id ? 'on' : ''}" data-act="switchP" data-arg="${q.id}"><span class="av">${q.avatar}</span><span class="pn">${esc(q.name)}<small>${q.level} · ур. ${levelOf(q.xp)}</small></span></button>`).join('')}</div>
       <div class="stats-mini"><span title="Серия дней">🔥 ${streakNow(p)}</span><span title="XP">⭐ ${p.xp}</span></div>
     </header>
     <div class="content">${body}</div>
   </main>
   <nav class="bottom">${MOBILE_NAV.map(k => { const n = NAV.find(x => x[0] === k) || ['more', '☰', 'Ещё']; return `<button class="${UI.view === k ? 'on' : ''}" data-act="${k === 'more' ? 'menu' : 'go'}" data-arg="${k}"><span>${n[1]}</span><small>${n[2].replace('Grammar World', 'Грамматика').replace('Мои слова', 'Слова')}</small></button>`; }).join('')}</nav>
-  ${UI.menu ? `<div class="sheet-bg" data-act="menuClose"></div><div class="sheet">${NAV.map(n => `<button class="nav-i" data-act="go" data-arg="${n[0]}"><span>${n[1]}</span>${n[2]}${n[0] === 'tasks' && pending ? `<em class="badge">${pending}</em>` : ''}</button>`).join('')}</div>` : ''}
+  ${UI.menu ? `<div class="sheet-bg" data-act="menuClose"></div><div class="sheet">${navFor(p).map(n => `<button class="nav-i" data-act="go" data-arg="${n[0]}"><span>${n[1]}</span>${n[2]}${n[0] === 'tasks' && pending ? `<em class="badge">${pending}</em>` : ''}</button>`).join('')}</div>` : ''}
   ${modalHTML()}`;
 }
 const sec = (title, inner, extra = '') => `<section class="sec"><div class="sec-h"><h2>${title}</h2>${extra}</div>${inner}</section>`;
@@ -787,6 +843,7 @@ function viewHome() {
   const wd = wotd(p);
   const lastTest = p.tests.length ? p.tests[p.tests.length - 1].date : null;
   const tasks = myTasks(p).filter(t => !Cloud.submissions[t.id]);
+  if (isKid(p) && !p.tests.length) return `<div class="hero card"><div class="hero-l"><div class="hello">Hello, ${esc(p.name)}! ${p.avatar}</div><div class="muted">Давай познакомимся! Ответь на 12 вопросов — так я узнаю, что ты уже знаешь, и подберу задания именно для тебя.</div></div></div><div class="card center"><div class="big-emoji">🎯</div><h2>Сначала маленький тест</h2><p class="muted">Это не экзамен — ошибаться можно! Картинки, слова и чуть-чуть грамматики.</p><button class="btn big" data-act="game" data-arg="placement">Начать тест 🚀</button></div>`;
   const lastAch = Object.entries(p.ach).sort((a, b) => a[1] < b[1] ? 1 : -1).slice(0, 4);
   return `
   <div class="hero card">
@@ -813,7 +870,7 @@ function viewHome() {
       ${tasks.length ? `<div class="card mini accent-card" data-act="go" data-arg="tasks"><div class="mini-h">🍎 Задания учителя</div><b>${plural(tasks.length, ['новое задание', 'новых задания', 'новых заданий'])}</b><div class="muted small">${esc(tasks[0].title)}</div></div>` : ''}
       <div class="card mini"><div class="mini-h">🔁 На повторение</div><b class="big-n">${due}</b><div class="muted small">${plural(due, ['слово ждёт', 'слова ждут', 'слов ждут'])} повторения</div>${due ? `<button class="btn small" data-act="game" data-arg="flash">Повторить</button>` : ''}</div>
       <div class="card mini wotd"><div class="mini-h">✨ Слово дня</div><div class="w-big">${esc(wd.en)} <button class="icon-btn" data-act="say" data-arg="${esc(wd.en)}">🔊</button></div><div>${wd.emoji || ''} ${esc(wd.ru)}</div>${wd.ex ? `<div class="muted small">${esc(wd.ex)}</div>` : ''}${p.words.some(w => norm(w.en) === norm(wd.en)) ? '<div class="muted small">✓ уже в словаре</div>' : `<button class="btn small ghost" data-act="addWotd">+ В мой словарь</button>`}</div>
-      ${S.profiles.length > 1 ? `<div class="card mini" data-act="go" data-arg="arena"><div class="mini-h">👨‍👩‍👦 Семейный рейтинг недели</div>${famBoard()}</div>` : ''}
+      ${S.profiles.length > 1 && !isKid(p) ? `<div class="card mini" data-act="go" data-arg="arena"><div class="mini-h">👨‍👩‍👦 Семейный рейтинг недели</div>${famBoard()}</div>` : ''}
       <div class="card mini"><div class="mini-h">🏆 Последние достижения</div>${lastAch.length ? `<div class="ach-row">${lastAch.map(([id]) => { const a = D.ACH.find(x => x[0] === id); return a ? `<span title="${esc(a[2])}">${a[1]}</span>` : ''; }).join('')}</div>` : '<div class="muted small">Первое достижение совсем близко!</div>'}</div>
     </div>
   </div>`;
@@ -917,7 +974,9 @@ function viewTopic() {
   const t = TOP[UI.arg], p = P(); if (!t) return viewGrammar();
   const st = p.topics[t.id] || { ok: 0, bad: 0, best: 0 };
   if (!st.seen) { p.topics[t.id] = Object.assign(st, { seen: true }); }
-  return `<button class="btn ghost small" data-act="go" data-arg="grammar">← Grammar World</button>
+  const ls = UI.lessonStep != null && planFor(p).steps[UI.lessonStep] && planFor(p).steps[UI.lessonStep].topic === t.id && !planFor(p).steps[UI.lessonStep].done;
+  return `<button class="btn ghost small" data-act="go" data-arg="${ls ? 'home' : 'grammar'}">← ${ls ? 'Главная' : 'Grammar World'}</button>
+  ${ls ? `<div class="notice">📘 <b>Урок дня.</b> Прочитай теорию, послушай примеры и посмотри типичные ошибки. Потом нажми кнопку — дальше будет Grammar Battle по этой теме. <button class="btn small" data-act="lessonDone">✅ Я изучил(а) тему</button></div>` : ''}
   <div class="card topic-head"><div><h1>${t.name}</h1><div class="muted">${esc(t.ru)} · уровень ${t.level}</div></div><div class="th-st"><b>${st.best || 0}%</b><small>лучший результат</small>${acc(st) != null ? `<small>точность ${acc(st)}%</small>` : ''}</div></div>
   <div class="row gap wrap"><button class="btn" data-act="gameT" data-arg="battle">⚔️ Grammar Battle</button><button class="btn ghost" data-act="gameT" data-arg="builder">🧱 Собери предложение</button>${t.errors.length ? '<button class="btn ghost" data-act="gameT" data-arg="error">🔍 Найди ошибку</button>' : ''}${AI ? `<button class="btn ghost" data-act="aiTopic" data-arg="${t.id}">🤖 Объясни проще</button>` : ''}</div>
   <div class="topic-body">
@@ -935,7 +994,7 @@ function viewTopic() {
 function viewGames() {
   const p = P(), kid = isKid(p);
   return sec('🎮 Игры и упражнения', `<div class="games">${GAMES.filter(g => (!kid || g.kid) && (!g.ai || AI)).map(g => `<button class="gcard" data-act="game" data-arg="${g.id}"><span class="g-ico">${g.icon}</span><b>${g.name}</b><small>${g.desc}</small></button>`).join('')}
-  ${S.profiles.length > 1 ? `<button class="gcard" data-act="go" data-arg="arena"><span class="g-ico">⚔️</span><b>Семейная дуэль</b><small>Викторина друг против друга</small></button>` : ''}</div>
+  ${myProfiles().length > 1 ? `<button class="gcard" data-act="go" data-arg="arena"><span class="g-ico">⚔️</span><b>Семейная дуэль</b><small>Викторина друг против друга</small></button>` : ''}</div>
   <p class="muted small">Все игры строятся из ваших слов и изученных тем. Каждый правильный ответ — +10 XP.</p>`);
 }
 function viewListen() {
@@ -953,17 +1012,18 @@ function viewListen() {
 function viewRead() {
   const p = P(), kid = isKid(p);
   const texts = D.READING.filter(r => !kid || r.kid).concat(p.aiTexts || []);
-  return sec('📖 Reading', `<div class="games">${texts.map(r => `<button class="gcard" data-act="go" data-arg="reader:${r.id}"><span class="g-ico">📄</span><b>${esc(r.title)}</b><small>Уровень ${r.level}</small></button>`).join('')}
+  return sec('📖 Reading', `<div class="games">${texts.map(r => `<button class="gcard" data-act="go" data-arg="reader:${r.id}"><span class="g-ico">${(p.readDone || {})[r.id] ? '✅' : r.ielts ? '🎓' : '📄'}</span><b>${esc(r.title)}</b><small>Уровень ${r.level}${r.ielts ? ' · IELTS' : ''}${(p.readDone || {})[r.id] ? ' · прочитано' : ''}</small></button>`).join('')}
   ${AI ? `<button class="gcard ai" data-act="aiText"><span class="g-ico">✨</span><b>Новый текст с AI</b><small>Из ваших слов, уровень ${p.level}</small></button>` : ''}</div>
   <p class="muted small">Нажми на любое слово в тексте, чтобы послушать его и добавить в свой словарь — это кнопка «Я не знаю это слово».</p><div id="aiTextStatus"></div>`);
 }
 function viewReader() {
   const p = P(), id = String(UI.arg).replace('reader:', ''); const r = D.READING.concat(p.aiTexts || []).find(x => x.id === id); if (!r) return viewRead();
-  const words = r.text.split(/(\s+)/).map(t => /\s+/.test(t) ? t : `<span class="rw" data-act="rword" data-arg="${esc(t.replace(/[^A-Za-z'-]/g, ''))}">${esc(t)}</span>`).join('');
+  const wrap = par => par.split(/(\s+)/).map(t => /\s+/.test(t) ? t : `<span class="rw" data-act="rword" data-arg="${esc(t.replace(/[^A-Za-z'-]/g, ''))}">${esc(t)}</span>`).join('');
+  const words = r.text.split(/\n\n+/).map(wrap).join('</p><p class="read-text">');
   UI.readQ = UI.readQ && UI.readQ.id === id ? UI.readQ : { id, ans: {} };
   return `<button class="btn ghost small" data-act="go" data-arg="read">← Тексты</button>
-  <div class="card reader"><div class="row between"><h2>${esc(r.title)}</h2><button class="btn small ghost" data-act="say" data-arg="${esc(r.text)}">🔊 Слушать текст</button></div><p class="read-text">${words}</p></div>
-  ${r.q && r.q.length ? `<div class="card"><h3>Вопросы на понимание</h3>${r.q.map((q, i) => { const a = UI.readQ.ans[i]; return `<div class="rq"><b>${i + 1}. ${esc(q[0])}</b><div class="opts sm">${q[2].map(o => { let c = ''; if (a != null) { if (o === q[1]) c = 'right'; else if (o === a) c = 'wrong'; } return `<button class="opt ${c}" data-act="readAns" data-arg="${i}|${esc(o)}" ${a != null ? 'disabled' : ''}>${esc(o)}</button>`; }).join('')}</div></div>`; }).join('')}</div>` : ''}`;
+  <div class="card reader"><div class="row between"><h2>${esc(r.title)}</h2>${r.ielts ? '<span class="pill">IELTS-формат · ' + r.text.split(/\s+/).length + ' слов</span>' : ''}<button class="btn small ghost" data-act="say" data-arg="${esc(r.text)}">🔊 Слушать текст</button></div><p class="read-text">${words}</p></div>
+  ${r.q && r.q.length ? `<div class="card"><h3>Вопросы на понимание</h3>${r.ielts ? '<p class="muted small">True — так сказано в тексте; False — в тексте сказано обратное; Not Given — в тексте об этом нет информации.</p>' : ''}${r.q.map((q, i) => { const a = UI.readQ.ans[i]; return `<div class="rq"><b>${i + 1}. ${esc(q[0])}</b><div class="opts sm">${q[2].map(o => { let c = ''; if (a != null) { if (o === q[1]) c = 'right'; else if (o === a) c = 'wrong'; } return `<button class="opt ${c}" data-act="readAns" data-arg="${i}|${esc(o)}" ${a != null ? 'disabled' : ''}>${esc(o)}</button>`; }).join('')}</div></div>`; }).join('')}</div>` : ''}`;
 }
 
 /* ---------- AI Teacher ---------- */
@@ -1077,11 +1137,35 @@ function doTask(id) {
   } else if (t.type === 'writing') { UI.modal = { kind: 'writeTask', id }; render(); }
   Teacher.submit = submit;
 }
-function rewardReviews() { if (!S) return; S.profiles.forEach(p => { let ch = false; p.stats.rewarded = p.stats.rewarded || {}; Object.entries(Cloud.reviews).forEach(([id, r]) => { const sub = Cloud.submissions[id]; if (!sub || sub.pid !== p.id || p.stats.rewarded[id]) return; p.stats.rewarded[id] = 1; ch = true; addXP((r.grade || 0) * 10, p, true); if (p.id === S.activeId) toast(`👩‍🏫 Учитель проверил задание: ${'★'.repeat(r.grade || 0)} (+${(r.grade || 0) * 10} XP)`, 'ach'); }); if (ch) save(p); }); }
+function rewardReviews() { if (!S) return; S.profiles.filter(canSave).forEach(p => { let ch = false; p.stats.rewarded = p.stats.rewarded || {}; Object.entries(Cloud.reviews).forEach(([id, r]) => { const sub = Cloud.submissions[id]; if (!sub || sub.pid !== p.id || p.stats.rewarded[id]) return; p.stats.rewarded[id] = 1; ch = true; addXP((r.grade || 0) * 10, p, true); if (p.id === S.activeId) toast(`👩‍🏫 Учитель проверил задание: ${'★'.repeat(r.grade || 0)} (+${(r.grade || 0) * 10} XP)`, 'ach'); }); if (ch) save(p); }); }
+
+/* ---------- Результаты ребёнка (для родителя и учителя) ---------- */
+function resultsHTML(p) {
+  const sm = p.summary || (p.words ? wordSummary(p) : {}); const days = []; for (let i = 13; i >= 0; i--) days.push(addDays(today(), -i)); const mx = Math.max(10, ...days.map(d => (p.xpLog || {})[d] || 0));
+  const rows = Object.entries(p.topics || {}).filter(([k, x]) => TOP[k] && (x.ok + x.bad)).sort((a, b) => acc(a[1]) - acc(b[1]));
+  const pl = p.plans && p.plans[today()]; const mins = Math.round(Object.values(p.timeLog || {}).reduce((a, b) => a + b, 0));
+  const tot = ((p.stats || {}).ok || 0) + ((p.stats || {}).bad || 0);
+  const test = (p.tests || []).slice(-1)[0];
+  const tasks = (Cloud.tasks || []).filter(x => x.target === p.id || x.target === 'all');
+  return `<div class="kpis"><div class="card kpi"><b>${p.level}</b><span>уровень${test ? ' · тест ' + test.score + '/' + test.total : ' · тест не пройден'}</span></div><div class="card kpi"><b>${p.xp}</b><span>XP · ур. ${levelOf(p.xp)}</span></div><div class="card kpi"><b>${streakNow(p)}</b><span>дней подряд</span></div><div class="card kpi"><b>${sm.total || 0}</b><span>слов · ${sm.mastered || 0} усвоено</span></div><div class="card kpi"><b>${tot ? Math.round(p.stats.ok / tot * 100) : 0}%</b><span>верных ответов</span></div><div class="card kpi"><b>${mins}</b><span>минут занятий</span></div></div>
+  <div class="prog-grid"><div class="card"><h3>Активность за 2 недели</h3><div class="chart">${days.map(d => `<div class="cbar" title="${fmtDate(d)}: ${(p.xpLog || {})[d] || 0} XP"><i style="height:${((p.xpLog || {})[d] || 0) / mx * 100}%"></i><small>${d.slice(8)}</small></div>`).join('')}</div>
+  <p class="muted small">План сегодня: ${pl ? pl.steps.filter(s => s.done).length + ' / ' + pl.steps.length + ' шагов' : 'ещё не начат'}</p></div>
+  <div class="card"><h3>Грамматика (слабые сверху)</h3>${rows.length ? rows.slice(0, 10).map(([k, x]) => `<div class="fb-row"><span>${TOP[k].name}</span>${bar(acc(x), 'sm ' + (acc(x) < 70 ? 'bad' : ''))}<b>${acc(x)}%</b></div>`).join('') : '<p class="muted">Пока нет данных.</p>'}</div>
+  <div class="card"><h3>Задания учителя</h3>${tasks.length ? tasks.map(x => { const sub = Cloud.submissions[x.id], rev = Cloud.reviews[x.id]; return `<div class="fb-row"><span>${esc(x.title)}</span><b>${rev ? '★'.repeat(rev.grade) : sub ? (sub.total ? sub.score + '/' + sub.total : 'сдано') : '⏳'}</b></div>`; }).join('') : '<p class="muted">Заданий нет.</p>'}</div>
+  <div class="card"><h3>Достижения</h3><div class="ach-row">${Object.keys(p.ach || {}).map(id => { const a = D.ACH.find(x => x[0] === id); return a ? `<span title="${esc(a[2])}">${a[1]}</span>` : ''; }).join('') || '<span class="muted small">Пока нет</span>'}</div></div>
+  <div class="card wide"><h3>Дневник ученика</h3>${(p.diary || []).slice(-5).reverse().map(d => `<div class="diary-e"><b>${fmtDate(d.date)}</b><div>${esc(d.text)}</div></div>`).join('') || '<p class="muted">Записей пока нет.</p>'}</div></div>`;
+}
+function viewResults() {
+  const ps = otherProfiles(); if (!ps.length) return sec('👦 Результаты', '<p class="muted">Здесь появятся результаты сына, когда он войдёт под своим логином.</p>');
+  const cur = ps.find(x => x.id === UI.arg) || ps[0];
+  return sec(`👦 Результаты: ${esc(cur.avatar + ' ' + cur.name)}`, `${ps.length > 1 ? `<div class="tabs">${ps.map(x => `<button class="${x.id === cur.id ? 'on' : ''}" data-act="go" data-arg="results:${x.id}">${x.avatar} ${esc(x.name)}</button>`).join('')}</div>` : ''}
+  <p class="muted small">Только просмотр: ${esc(cur.name)} занимается под своим логином, а вы видите его прогресс. Задания для него можно выдать в разделе «Задания учителя».</p>${resultsHTML(cur)}`);
+}
 
 /* ---------- Family Arena ---------- */
 function viewArena() {
   const ps = S.profiles;
+  const canDuel = myProfiles().length > 1;
   if (ps.length < 2) return sec('👨‍👩‍👦 Family Arena', `<div class="card"><p>Добавьте второй профиль в настройках, чтобы соревноваться всей семьёй.</p><button class="btn" data-act="go" data-arg="settings">Настройки</button></div>`);
   const ws = weekStart(), lw = addDays(ws, -7);
   const total = ps.reduce((s, p) => s + weekXP(p), 0), goal = S.family.goal || 2000;
@@ -1092,11 +1176,11 @@ function viewArena() {
    <div class="card"><h3>🏆 Турнир недели</h3>${famBoard()}<p class="muted small">Неделя с ${fmtDate(ws)}. ${last && last.x ? `Чемпион прошлой недели: ${last.p.avatar} ${esc(last.p.name)} (${last.x} XP)` : ''}</p></div>
    <div class="card"><h3>🎯 Семейная цель недели</h3><div class="big-n">${total} / ${goal} XP</div>${bar(total / goal * 100, 'lvl')}<p>Награда: <b>${esc(S.family.reward)}</b></p>${total >= goal ? '<div class="done-msg">🎉 Цель достигнута! Время награды!</div>' : `<p class="muted small">Осталось ${goal - total} XP — вместе вы справитесь!</p>`}</div>
    <div class="card"><h3>🤝 Совместное задание дня</h3><p>Каждый побеждает своего Daily Boss.</p>${joint.map(j => `<div class="fb-row"><span>${j.p.avatar} ${esc(j.p.name)}</span><b>${j.done ? '✅' : '⏳'}</b></div>`).join('')}${joint.every(j => j.done) ? '<div class="done-msg">Командная победа! 🎉</div>' : ''}</div>
-   <div class="card duel-card"><h3>⚔️ Семейная дуэль</h3><p>Викторина друг против друга на одном устройстве. Каждый получает вопросы своего уровня — честно и весело!</p><button class="btn big" data-act="duel">Начать дуэль</button></div>
+   ${canDuel ? '<div class="card duel-card"><h3>⚔️ Семейная дуэль</h3><p>Викторина друг против друга на одном устройстве. Каждый получает вопросы своего уровня — честно и весело!</p><button class="btn big" data-act="duel">Начать дуэль</button></div>' : ''}
   </div>`);
 }
 function startDuel() {
-  const ps = S.profiles.slice(0, 2), qs = [];
+  const ps = myProfiles().slice(0, 2), qs = [];
   for (let r = 0; r < 6; r++) ps.forEach(p => {
     const pool = wordPool(p), ws = introduced(p), tps = studiedTopics(p);
     const q = rnd(2) ? qGrammar(TOP[pick(tps)], pick(TOP[pick(tps)].items)) : qWordMCQ(pick(ws), pool, rnd(2) ? 'ru' : 'en');
@@ -1151,11 +1235,12 @@ function viewSettings() {
    <div class="row gap wrap"><label class="grow">Имя<input name="name" value="${esc(p.name)}" maxlength="24"></label><label>Тип<select name="kind"><option value="adult" ${p.kind === 'adult' ? 'selected' : ''}>Взрослый</option><option value="child" ${p.kind === 'child' ? 'selected' : ''}>Ребёнок</option></select></label><label style="max-width:100px">Возраст<input name="age" type="number" value="${p.age || ''}"></label></div>
    <label>Аватар</label><div class="av-pick">${AVATARS.map(a => `<label><input type="radio" name="avatar" value="${a}" ${a === p.avatar ? 'checked' : ''}><span>${a}</span></label>`).join('')}</div>
    <div class="row gap wrap"><label>Уровень<select name="level">${LEVELS.map(l => `<option ${l === p.level ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label>Минут в день<input name="minutes" type="number" min="5" max="120" value="${p.minutes}"></label><label>Новых слов в день<input name="newPerDay" type="number" min="1" max="30" value="${p.newPerDay}"></label></div>
+   ${p.kind !== 'child' ? `<label class="inline"><input type="checkbox" name="intensive" ${p.intensive !== false ? 'checked' : ''}> ⚡ Интенсив: каждый день — новые слова, предложения с ними, урок по теме, закрепление, IELTS-чтение, аудирование и Daily Boss (около 60–75 минут)</label>` : ''}
    <label class="inline"><input type="checkbox" name="hard" ${p.hard ? 'checked' : ''}> 🔥 Сложный режим: грамматику вписываешь сам, больше заданий в бою и в Daily Boss (по 2 вопроса на каждое время), таймер 7 секунд, больше шагов в плане дня</label>
    <label>Тема оформления</label><div class="theme-pick">${Object.entries(THEMES).map(([k, t]) => `<label class="th-opt th-${k}"><input type="radio" name="theme" value="${k}" ${k === p.theme ? 'checked' : ''}><span><b>${t.name}</b><small>${t.desc}</small></span></label>`).join('')}</div>
    <button class="btn">Сохранить</button></form>
   <div class="card"><h3>Семья</h3><form data-form="family" class="wform"><div class="row gap wrap"><label>Семейная цель недели (XP)<input name="goal" type="number" value="${S.family.goal}"></label><label class="grow">Награда<input name="reward" value="${esc(S.family.reward)}"></label></div><label>Свои категории слов (через запятую)<input name="cats" value="${esc((S.family.cats || []).join(', '))}"></label><button class="btn small">Сохранить</button></form>
-   <div class="row gap wrap mt"><button class="btn ghost" data-act="addProfile" data-arg="adult">+ Взрослый профиль</button><button class="btn ghost" data-act="addProfile" data-arg="child">+ Детский профиль</button>${S.profiles.length > 1 ? `<button class="btn ghost danger" data-act="delProfile">Удалить профиль «${esc(p.name)}»</button>` : ''}</div></div>
+   <div class="row gap wrap mt"><button class="btn ghost" data-act="addProfile" data-arg="adult">+ Взрослый профиль</button><button class="btn ghost" data-act="addProfile" data-arg="child">+ Детский профиль</button>${myProfiles().length > 1 ? `<button class="btn ghost danger" data-act="delProfile">Удалить профиль «${esc(p.name)}»</button>` : ''}</div></div>
   <div class="card"><h3>Данные и резервная копия</h3><p class="muted small">${esc(syncLabel())}.</p>
    <div class="row gap wrap"><button class="btn ghost" data-act="modal" data-arg="export">⇩ Резервная копия</button><button class="btn ghost" data-act="modal" data-arg="importAll">⇧ Восстановить из копии</button><button class="btn ghost" data-act="modal" data-arg="exportWords">📋 Экспорт словаря</button><button class="btn ghost danger" data-act="resetProfile">Сбросить прогресс профиля</button></div></div>${window.EQ_SETTINGS_HTML ? window.EQ_SETTINGS_HTML() : ''}`);
 }
@@ -1199,13 +1284,7 @@ const Teacher = {
     const toReview = tasks.filter(x => Cloud.submissions[x.id] && !Cloud.reviews[x.id]);
     let body = '';
     if (t.tab === 'overview') {
-      const sm = p.summary || {}; const days = []; for (let i = 6; i >= 0; i--) days.push(addDays(today(), -i)); const mx = Math.max(10, ...days.map(d => (p.xpLog || {})[d] || 0));
-      const rows = Object.entries(p.topics || {}).filter(([k, x]) => TOP[k] && (x.ok + x.bad)).sort((a, b) => acc(a[1]) - acc(b[1]));
-      body = `<div class="kpis"><div class="card kpi"><b>${p.level}</b><span>уровень</span></div><div class="card kpi"><b>${p.xp}</b><span>XP · ур. ${levelOf(p.xp)}</span></div><div class="card kpi"><b>${streakNow(p)}</b><span>дней подряд</span></div><div class="card kpi"><b>${sm.total || 0}</b><span>слов</span></div><div class="card kpi"><b>${sm.mastered || 0}</b><span>усвоено</span></div><div class="card kpi"><b>${sm.review || 0}</b><span>ждут повторения</span></div></div>
-      <div class="prog-grid"><div class="card"><h3>Активность за неделю</h3><div class="chart">${days.map(d => `<div class="cbar"><i style="height:${((p.xpLog || {})[d] || 0) / mx * 100}%"></i><small>${d.slice(8)}</small></div>`).join('')}</div>
-      <p class="muted small">План сегодня: ${p.plans && p.plans[today()] ? p.plans[today()].steps.filter(s => s.done).length + ' / ' + p.plans[today()].steps.length : 'не начат'}</p></div>
-      <div class="card"><h3>Грамматика (слабые сверху)</h3>${rows.length ? rows.slice(0, 10).map(([k, x]) => `<div class="fb-row"><span>${TOP[k].name}</span>${bar(acc(x), 'sm ' + (acc(x) < 70 ? 'bad' : ''))}<b>${acc(x)}%</b></div>`).join('') : '<p class="muted">Пока нет данных.</p>'}</div>
-      <div class="card wide"><h3>Дневник ученика</h3>${(p.diary || []).slice(-5).reverse().map(d => `<div class="diary-e"><b>${fmtDate(d.date)}</b><div>${esc(d.text)}</div></div>`).join('') || '<p class="muted">Записей пока нет.</p>'}</div></div>`;
+      body = resultsHTML(p);
     } else if (t.tab === 'tasks') {
       body = `<div class="card"><h3>Новое задание</h3>${taskForm(p.id)}</div>${tasks.map(x => this.taskRow(x)).join('') || '<p class="muted">Заданий пока нет.</p>'}`;
     } else {
@@ -1299,7 +1378,9 @@ async function aiText() {
 
 /* ---------- События ---------- */
 const ACT = {
-  go: a => { if (a.startsWith('reader:')) return go('reader', a); go(a); },
+  go: a => { if (a.startsWith('reader:')) return go('reader', a); if (a.startsWith('results:')) return go('results', a.slice(8)); go(a); },
+  makeMine: () => { const p = newProfile('adult', { name: 'Я', uid: Cloud.uid || undefined }); S.profiles.push(p); S.activeId = p.id; save(p); go('settings'); },
+  lessonDone: () => { const i = UI.lessonStep; UI.lessonStep = null; completeStep(i); save(); const p = P(), pl = planFor(p); let nx = pl.steps.findIndex((s, k) => k > i && !s.done); if (nx < 0) nx = pl.steps.findIndex(s => !s.done); if (nx >= 0) runStep(nx); else go('home'); },
   menu: () => { UI.menu = true; render(); }, menuClose: () => { UI.menu = false; render(); },
   switchP: a => { S.activeId = a; UI.chat = null; save(null); render(); },
   step: a => runStep(+a),
@@ -1318,7 +1399,7 @@ const ACT = {
   flashPhase: () => { const g = UI.game; g.phase++; render(); const c = flashCur(); if (g.phase === 3 && c.w.examples[0]) speak(c.w.examples[0].en); },
   flashCheck: a => { const g = UI.game, { w } = flashCur(); g.checked = a; if (a === w.ru) speak(w.en); render(); },
   flashLearnDone: () => { const g = UI.game, { it, w } = flashCur(), p = P(); const ok = g.checked === w.ru; g.checked = null;
-    if (ok) { srs(w, 2); g.learned++; p.intro[today()] = (p.intro[today()] || 0) + 1; Object.keys(p.intro).forEach(d => { if (daysBetween(d, today()) > 7) delete p.intro[d]; }); g.xp += 10; addXP(10, p, true); }
+    if (ok) { srs(w, 2); g.learned++; p.introIds = p.introIds && p.introIds[today()] ? p.introIds : { [today()]: [] }; p.introIds[today()].push(w.id); p.intro[today()] = (p.intro[today()] || 0) + 1; Object.keys(p.intro).forEach(d => { if (daysBetween(d, today()) > 7) delete p.intro[d]; }); g.xp += 10; addXP(10, p, true); }
     else if (!g.requeued[w.id]) { g.requeued[w.id] = 1; g.queue.push({ id: w.id, learn: true }); toast('Ничего страшного — это слово вернётся в конце 🔁'); }
     else { srs(w, 1); g.learned++; p.intro[today()] = (p.intro[today()] || 0) + 1; }
     flashNext(); },
@@ -1336,7 +1417,7 @@ const ACT = {
   addWotd: () => { const p = P(), d = wotd(p); const w = mkWord({ en: d.en, ru: d.ru, examples: d.ex ? [{ en: d.ex, ru: '' }] : [], own: true, cat: isKid(p) ? 'Animals' : 'General Vocabulary', emoji: d.emoji || '' }); const seed = (isKid(p) ? D.KID_WORDS : D.ADULT_WORDS).find(a => a[0] === d.en); if (seed) Object.assign(w, { mnemo: seed[5], ipa: seed[3] }); p.words.unshift(w); checkAch(p); save(); render(); toast('Слово добавлено в словарь'); if (AI && !w.mnemo) aiFillWord(w).then(() => { save(); render(); }).catch(() => { }); },
   rword: a => { if (!a) return; speak(a); openModal('rword', { w: a }); },
   addRword: async a => { const p = P(); const w = mkWord({ en: a.toLowerCase(), own: true, cat: allCats(p)[0] }); p.words.unshift(w); UI.modal = null; save(); render(); toast(`«${esc(a)}» добавлено в словарь`); if (AI) { try { await aiFillWord(w); save(); render(); } catch (e) { openModal('editWord', { id: w.id }); } } else openModal('editWord', { id: w.id }); },
-  readAns: a => { const [i, o] = a.split('|'); UI.readQ.ans[i] = o; const r = D.READING.concat(P().aiTexts || []).find(x => x.id === UI.readQ.id); if (r && r.q[i][1] === o) addXP(10); else P().stats.bad++; if (Object.keys(UI.readQ.ans).length === r.q.length) { const st = planFor(P()).steps.findIndex(s => s.k === 'read' && !s.done); if (st >= 0) completeStep(st); } save(); render(); },
+  readAns: a => { const [i, o] = a.split('|'); UI.readQ.ans[i] = o; const pp = P(); pp.readDone = pp.readDone || {}; const r = D.READING.concat(P().aiTexts || []).find(x => x.id === UI.readQ.id); if (r && r.q[i][1] === o) addXP(10); else P().stats.bad++; if (Object.keys(UI.readQ.ans).length === r.q.length) { pp.readDone[r.id] = today(); toast('📖 Текст прочитан! +' + (r.ielts ? 30 : 15) + ' XP', 'ach'); addXP(r.ielts ? 30 : 15, pp, true); const st = planFor(P()).steps.findIndex(s => s.k === 'read' && !s.done); if (st >= 0) completeStep(st); } save(); render(); },
   aiText,
   aiMode: a => { UI.chat = { mode: a, messages: [], busy: false }; render(); },
   scenario: a => startScenario(a),
@@ -1349,7 +1430,7 @@ const ACT = {
   duel: startDuel,
   doTask: a => doTask(a),
   copy: a => { const el = $('#' + a); el.select(); try { navigator.clipboard.writeText(el.value).then(() => toast('Скопировано'), () => toast('Выделите текст и скопируйте вручную')); } catch (e) { toast('Выделите текст и скопируйте вручную'); } },
-  addProfile: a => { const p = newProfile(a, { name: a === 'child' ? 'Новый ученик' : 'Новый профиль' }); S.profiles.push(p); S.activeId = p.id; save(p); go('settings'); },
+  addProfile: a => { const p = newProfile(a, { name: a === 'child' ? 'Новый ученик' : 'Новый профиль', uid: a === 'child' ? undefined : (Cloud.uid || undefined) }); S.profiles.push(p); if (isMine(p)) { S.activeId = p.id; save(p); go('settings'); } else { save(p); toast('Детский профиль создан. Выдайте ребёнку логин в «Доступ и аккаунт» — при входе профиль станет его.'); render(); } },
   delProfile: () => { if (UI.confirmDel !== S.activeId) { UI.confirmDel = S.activeId; toast('Нажмите ещё раз, чтобы удалить профиль со всем прогрессом'); return; } const id = S.activeId; S.profiles = S.profiles.filter(p => p.id !== id); S.deleted = (S.deleted || []).concat([id]); S.activeId = S.profiles[0].id; save(null); go('home'); },
   resetProfile: () => { const p = P(); if (UI.confirmReset !== p.id) { UI.confirmReset = p.id; toast('Нажмите ещё раз, чтобы сбросить прогресс (слова останутся)'); return; } Object.assign(p, { xp: 0, xpLog: {}, timeLog: {}, streak: { count: 0, last: null, best: 0 }, topics: {}, plans: {}, ach: {}, intro: {} }); p.words.forEach(w => Object.assign(w, { stage: 0, due: null, reps: 0, lapses: 0, ok: 0, bad: 0 })); save(); render(); toast('Прогресс сброшен'); },
   tPid: a => { UI.teacher.pid = a; render(); }, tTab: a => { UI.teacher.tab = a; render(); },
@@ -1363,6 +1444,7 @@ const FORMS = {
     const a = newProfile('adult', { name: f.aName.value.trim() || 'Я', avatar: (f.querySelector('[name=aAv]:checked') || {}).value || '🦊', level: f.aLevel.value === 'test' ? 'A2' : f.aLevel.value, minutes: +f.aMin.value, theme: f.aTheme.value, newPerDay: +f.aMin.value >= 40 ? 10 : 6 });
     S.profiles.push(a);
     if (f.kidOn.checked) S.profiles.push(newProfile('child', { name: f.kName.value.trim() || 'Сын', avatar: (f.querySelector('[name=kAv]:checked') || {}).value || '🦁', age: +f.kAge.value || 9, minutes: +f.kMin.value, theme: f.kTheme.value, newPerDay: +f.kMin.value >= 25 ? 5 : 4 }));
+    if (Cloud.uid) a.uid = Cloud.uid;
     S.activeId = a.id; save(null); S.profiles.forEach(p => p.updatedAt = Date.now());
     if (Cloud.db && Cloud.owner && !Cloud.on) { Cloud.on = true; setSync('cloud'); Cloud.subscribe(); Cloud.subscribeTasks(); Cloud.save(); }
     if (f.aLevel.value === 'test') startGame('placement'); else render();
@@ -1399,7 +1481,7 @@ const FORMS = {
   },
   importAll: f => { try { const s = JSON.parse(f.j.value); if (!s.profiles) throw 0; S = s; S.profiles.forEach(p => p.updatedAt = Date.now()); UI.modal = null; save(null); render(); toast('Данные восстановлены'); } catch (e) { toast('Не удалось прочитать копию'); } },
   chat: f => { const v = f.t.value; f.t.value = ''; sendChat(v); },
-  profile: f => { const p = P(); const kindChanged = p.kind !== f.kind.value; Object.assign(p, { name: f.name.value.trim() || p.name, kind: f.kind.value, age: +f.age.value || p.age, avatar: (f.querySelector('[name=avatar]:checked') || {}).value || p.avatar, level: f.level.value, minutes: +f.minutes.value || p.minutes, newPerDay: +f.newPerDay.value || p.newPerDay, theme: (f.querySelector('[name=theme]:checked') || {}).value || p.theme, hard: !!(f.hard && f.hard.checked) }); if (kindChanged || true) { const pl = p.plans[today()]; if (pl && !pl.steps.some(s => s.done)) delete p.plans[today()]; } save(); render(); toast('Сохранено'); },
+  profile: f => { const p = P(); const kindChanged = p.kind !== f.kind.value; Object.assign(p, { name: f.name.value.trim() || p.name, kind: f.kind.value, age: +f.age.value || p.age, avatar: (f.querySelector('[name=avatar]:checked') || {}).value || p.avatar, level: f.level.value, minutes: +f.minutes.value || p.minutes, newPerDay: +f.newPerDay.value || p.newPerDay, theme: (f.querySelector('[name=theme]:checked') || {}).value || p.theme, hard: !!(f.hard && f.hard.checked), intensive: f.intensive ? f.intensive.checked : p.intensive }); if (kindChanged || true) { const pl = p.plans[today()]; if (pl && !pl.steps.some(s => s.done)) delete p.plans[today()]; } save(); render(); toast('Сохранено'); },
   family: f => { S.family.goal = +f.goal.value || 2000; S.family.reward = f.reward.value.trim(); S.family.cats = f.cats.value.split(',').map(s => s.trim()).filter(Boolean); save(null); render(); toast('Сохранено'); },
   newTask: f => createTask(f),
   writeTask: f => { const id = f.dataset.arg, text = f.t.value.trim(); if (!text) return; UI.modal = null; render(); if (!Teacher.submit) doTask(id); Teacher.submit({ text }); },
