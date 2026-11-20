@@ -609,7 +609,7 @@ function renderQuiz() {
     <div class="q-card card ${fb}">
       ${q.pid ? `<div class="turn-tag">Ход: ${profById(q.pid).avatar} ${esc(profById(q.pid).name)}</div>` : ''}
       ${q.sub ? `<div class="q-sub">${esc(q.sub)}</div>` : ''}
-      <div class="q-prompt ${q.big ? 'emoji-big' : ''}">${fmtBlank(q.prompt)}</div>
+      <div class="q-prompt ${q.big ? 'emoji-big' : ''}">${q.big || q.listen || !/[A-Za-z]/.test(q.prompt) || q.tag && q.tag.word ? fmtBlank(q.prompt) : clickEn(q.prompt).replace(/___/g, '<span class="blank">____</span>')}</div>
       ${q.listen ? `<button class="btn ghost speak-btn" data-act="say" data-arg="${esc(q.listen)}">🔊 Послушать ещё раз</button>` : q.say && !q.sayAfter ? `<button class="icon-btn say" data-act="say" data-arg="${esc(q.say)}">🔊</button>` : ''}
       ${body}
     </div>${expl}</div>`;
@@ -634,7 +634,7 @@ function runFlash(opt = {}) {
   }
   queue = queue.filter(q => { const w = p.words.find(x => x.id === q.id); return w && w.ru; });
   if (!queue.length) return toast('У этих слов нет перевода — добавьте его в разделе «Мои слова»');
-  UI.game = { type: 'flash', queue, i: 0, phase: 0, flipped: false, step: opt.step, start: Date.now(), learned: 0, reviewed: 0, xp: 0, requeued: {} };
+  UI.game = { type: 'flash', after: opt.after, afterLabel: opt.afterLabel, queue, i: 0, phase: 0, flipped: false, step: opt.step, start: Date.now(), learned: 0, reviewed: 0, xp: 0, requeued: {} };
   render(); setTimeout(() => { const c = flashCur(); if (c) speak(c.w.en); }, 400);
 }
 function flashCur() { const g = UI.game; if (!g || g.type !== 'flash') return null; const it = g.queue[g.i]; if (!it) return null; return { it, w: P().words.find(w => w.id === it.id) }; }
@@ -653,7 +653,7 @@ function renderFlash() {
   if (g.done) return `<div class="game"><div class="game-top"><button class="icon-btn" data-act="closeGame">✕</button><div class="game-title">🧠 Мнемо-карточки</div><div></div></div>
     <div class="result card"><div class="big-emoji">🧠✨</div><h2>${THEMES[p.theme].win}</h2><p class="muted">Новых слов: ${g.learned} · Повторено: ${g.reviewed}</p><div class="xp-earned">+${g.xp + (g.step != null ? 20 : 0)} XP</div>
     <p class="muted small">Слова вернутся по графику: через 1 → 2 → 3 → 7 → 16 → 30 → 60 дней.</p>
-    <div class="row center gap"><button class="btn ghost" data-act="closeGame">Готово</button>${g.step != null ? '<button class="btn" data-act="nextStep">Следующий шаг →</button>' : ''}</div></div></div>`;
+    <div class="row center gap">${g.after ? `<button class="btn" data-act="flashAfter">${esc(g.afterLabel || 'Дальше →')}</button>` : `<button class="btn ghost" data-act="closeGame">Готово</button>${g.step != null ? '<button class="btn" data-act="nextStep">Следующий шаг →</button>' : ''}`}</div></div></div>`;
   const { it, w } = flashCur();
   const n = g.queue.length;
   const head = `<div class="game"><div class="game-top"><button class="icon-btn" data-act="closeGame">✕</button><div class="game-title">🧠 ${it.learn ? 'Новое слово' : 'Повторение'}</div><div class="game-count">${g.i + 1}/${n}</div></div><div class="progress thin"><i style="width:${g.i / n * 100}%"></i></div>`;
@@ -892,8 +892,8 @@ function viewVocab() {
   if (f.status) ws = ws.filter(w => wStatus(w) === f.status);
   return `${sec('📚 My Vocabulary', `
     <div class="stat-chips">${['new', 'learning', 'review', 'mastered'].map(k => `<button class="schip s-${k} ${f.status === k ? 'on' : ''}" data-act="vStatus" data-arg="${k}"><b>${sm[k]}</b>${ST_LABEL[k]}</button>`).join('')}</div>
-    <div class="row gap wrap"><button class="btn" data-act="modal" data-arg="addWord">+ Добавить слово</button><button class="btn ghost" data-act="modal" data-arg="import">⇪ Импорт списком</button>${dueWords(p).length ? `<button class="btn ghost" data-act="game" data-arg="flash">🔁 Повторить (${dueWords(p).length})</button>` : ''}<button class="btn ghost" data-act="game" data-arg="flash">🧠 Учить новые</button>${AI ? `<button class="btn ghost" data-act="game" data-arg="aiwords">✨ AI-упражнения по моим словам</button>` : ''}</div>
-    ${p.words.some(w => !w.ru) ? `<div class="notice">⚠️ У ${plural(p.words.filter(w => !w.ru).length, ['слова', 'слов', 'слов'])} нет перевода — они не попадут в упражнения, пока вы его не добавите. Нажмите на слово → «Изменить».</div>` : ''}
+    <div class="row gap wrap"><button class="btn" data-act="modal" data-arg="addWord">+ Добавить слово</button><button class="btn ghost" data-act="modal" data-arg="import">📊 Из таблицы / списком</button><button class="btn ghost" data-act="exportXlsx">⬇ Скачать словарь (Excel)</button>${dueWords(p).length ? `<button class="btn ghost" data-act="game" data-arg="flash">🔁 Повторить (${dueWords(p).length})</button>` : ''}<button class="btn ghost" data-act="game" data-arg="flash">🧠 Учить новые</button>${AI ? `<button class="btn ghost" data-act="game" data-arg="aiwords">✨ AI-упражнения по моим словам</button>` : ''}</div>
+    ${p.words.some(w => !w.ru) ? `<div class="notice">⚠️ У ${plural(p.words.filter(w => !w.ru).length, ['слова', 'слов', 'слов'])} нет перевода — они не попадут в упражнения, пока вы его не добавите. Можно перевести их автоматически. <button class="btn small" data-act="translateMissing" ${UI.translating ? 'disabled' : ''}>🌐 Перевести автоматически</button> <span class="small muted" id="trProgress">${UI.translating ? 'Перевожу…' : ''}</span></div>` : ''}
     <div class="filters"><input placeholder="🔍 Поиск слова…" data-input="vq" value="${esc(f.q)}"><select data-change="vcat"><option value="">Все категории</option>${allCats(p).map(c => `<option ${c === f.cat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
     <div class="words">${ws.length ? ws.map(w => `<div class="wcard" data-act="word" data-arg="${w.id}"><div class="wc-top"><b>${w.emoji ? w.emoji + ' ' : ''}${esc(w.en)}</b><span class="st s-${wStatus(w)}">${ST_LABEL[wStatus(w)]}</span></div><div class="muted">${w.ru ? esc(w.ru) : '<span class="bad-t">⚠️ добавьте перевод</span>'}</div><div class="wc-b"><span class="cat">${esc(w.cat)}</span>${w.own ? '<span class="cat own">моё</span>' : ''}${(w.myMnemo || w.mnemo) ? '<span title="Есть мнемоника">🧠</span>' : ''}</div></div>`).join('') : '<p class="muted">Ничего не найдено.</p>'}</div>
   `, `<span class="muted">${sm.total} слов</span>`)}`;
@@ -930,12 +930,132 @@ function wordForm(w) {
 }
 function importForm() {
   const p = P();
-  return `<form data-form="import"><h3>Импорт слов списком</h3><p class="muted small">Каждое слово с новой строки: <code>word - перевод</code>. Перевод можно не писать — ${AI ? 'AI заполнит его сам.' : 'тогда добавьте его позже.'}</p>
-  <textarea name="list" rows="9" placeholder="recruitment - подбор персонала&#10;candidate - кандидат&#10;to postpone"></textarea>
-  <label>Категория<select name="cat">${allCats(p).map(c => `<option>${esc(c)}</option>`).join('')}</select></label>
+  return `<form data-form="import"><h3>Добавить слова из таблицы или списка</h3>
+  <div class="card soft"><b>📊 Загрузить таблицу</b> <span class="muted small">Excel (.xlsx), CSV или таблица Google (Файл → Скачать → .xlsx или .csv)</span>
+   <p class="muted small">Колонки по порядку: <b>English</b> | <b>Перевод</b> | Категория | Пример | Перевод примера. Обязательна только первая колонка. Строка с заголовками распознаётся сама.</p>
+   <div class="row gap wrap"><input type="file" id="impFile" accept=".xlsx,.xls,.csv,.tsv,.txt" style="max-width:340px"><button type="button" class="btn small ghost" data-act="tplDownload">⬇ Скачать шаблон таблицы</button></div>
+   <div class="ai-status" id="impFileInfo"></div></div>
+  <p class="muted small mt">…или вставь список: каждое слово с новой строки <code>word - перевод</code>. Можно скопировать две колонки прямо из Excel или Google Таблиц и вставить сюда.</p>
+  <textarea name="list" rows="7" placeholder="recruitment - подбор персонала&#10;candidate - кандидат&#10;to postpone"></textarea>
+  <label>Категория (для слов, где она не указана)<select name="cat">${allCats(p).map(c => `<option>${esc(c)}</option>`).join('')}</select></label>
   ${AI ? '<label class="inline"><input type="checkbox" name="ai" checked> Дополнить слова через AI (перевод, мнемоника, примеры)</label>' : ''}
   <div class="ai-status" id="impStatus"></div>
-  <div class="row gap"><button class="btn">Импортировать</button><button type="button" class="btn ghost" data-act="modalClose">Отмена</button></div></form>`;
+  <div class="row gap"><button class="btn">Добавить слова</button><button type="button" class="btn ghost" data-act="modalClose">Отмена</button></div></form>`;
+}
+/* ---------- Таблицы: импорт и экспорт ---------- */
+let XLSXlib = null;
+function loadXLSX() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (XLSXlib) return XLSXlib;
+  XLSXlib = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload = () => res(window.XLSX); s.onerror = () => { XLSXlib = null; rej(new Error('xlsx')); }; document.head.appendChild(s); });
+  return XLSXlib;
+}
+function parseDelimited(text) {
+  const lines = text.replace(/^\ufeff/, '').split(/\r?\n/).filter(l => l.trim());
+  const first = lines[0] || '';
+  const d = first.includes('\t') ? '\t' : (first.split(';').length > first.split(',').length ? ';' : ',');
+  return lines.map(l => { const out = []; let cur = '', q = false; for (let i = 0; i < l.length; i++) { const c = l[i]; if (c === '"') { if (q && l[i + 1] === '"') { cur += '"'; i++; } else q = !q; } else if (c === d && !q) { out.push(cur); cur = ''; } else cur += c; } out.push(cur); return out.map(x => x.trim()); });
+}
+async function readTableFile(file) {
+  const name = file.name.toLowerCase();
+  if (/\.(xlsx|xls)$/.test(name)) { const X = await loadXLSX(); const wb = X.read(await file.arrayBuffer(), { type: 'array' }); const ws = wb.Sheets[wb.SheetNames[0]]; return X.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false }).map(r => r.map(c => String(c).trim())); }
+  return parseDelimited(await file.text());
+}
+function rowsToWords(rows) {
+  rows = rows.filter(r => r.some(c => c));
+  if (!rows.length) return [];
+  const h = rows[0].map(c => c.toLowerCase());
+  const find = (...keys) => h.findIndex(c => keys.some(k => c.includes(k)));
+  let map = { en: 0, ru: 1, cat: 2, ex: 3, exru: 4 };
+  const isHeader = h.some(c => /english|англ|word|слово|перевод|translation|категор|category/.test(c));
+  if (isHeader) {
+    const en = find('english', 'англ', 'word', 'слово'), ru = find('перевод', 'translation', 'russian', 'рус');
+    map = { en: en >= 0 ? en : 0, ru: ru >= 0 && ru !== en ? ru : 1, cat: find('категор', 'category', 'тема', 'topic'), ex: find('пример', 'example'), exru: h.findIndex((c, i) => /перевод примера|example translation/.test(c)) };
+    if (map.exru === map.ru) map.exru = -1; if (map.ex === map.exru) map.ex = find('example');
+    rows = rows.slice(1);
+  }
+  return rows.map(r => ({ en: r[map.en] || '', ru: map.ru >= 0 ? r[map.ru] || '' : '', cat: map.cat >= 0 ? r[map.cat] || '' : '', ex: map.ex >= 0 ? r[map.ex] || '' : '', exru: map.exru >= 0 ? r[map.exru] || '' : '' })).filter(x => x.en && x.en.length < 120);
+}
+async function importWords(items, defCat, useAI) {
+  const p = P(), added = []; let skipped = 0;
+  items.slice(0, 1000).forEach(x => {
+    const en = x.en.trim(); if (!en) return;
+    const ex = p.words.find(w => norm(w.en) === norm(en));
+    if (ex) { if (!ex.ru && x.ru) { ex.ru = x.ru; added.push(ex); } else skipped++; return; }
+    const cat = x.cat || defCat;
+    if (x.cat && !allCats(p).includes(x.cat)) S.family.cats = (S.family.cats || []).concat([x.cat]);
+    const w = mkWord({ en, ru: (x.ru || '').trim(), cat, own: true, examples: x.ex ? [{ en: x.ex, ru: x.exru || '' }] : [] });
+    p.words.unshift(w); added.push(w);
+  });
+  save(); toast(`Добавлено слов: ${added.length}${skipped ? ` · уже были в словаре: ${skipped}` : ''}`);
+  if (useAI && AI && added.length) {
+    const st = $('#impStatus');
+    for (let i = 0; i < added.length; i++) { if (st) st.textContent = `✨ AI дополняет слова: ${i + 1} / ${added.length}…`; try { await aiFillWord(added[i]); if (i % 5 === 4) save(); } catch (e) { if (e && (e.code === 'not_granted' || e.code === 'rate_limited')) break; } }
+  }
+  if (!(useAI && AI)) { const need = added.filter(w => !w.ru); const st = $('#impStatus'); for (let i = 0; i < need.length; i++) { if (st) st.textContent = `🌐 Перевожу: ${i + 1} / ${need.length}…`; await freeFill(need[i]); if (i % 5 === 4) save(); } }
+  const noRu = added.filter(w => !w.ru).length;
+  if (noRu) toast(`У ${noRu} слов нет перевода — добавьте его, чтобы они попали в упражнения`);
+  UI.modal = null; checkAch(p); save(); render();
+}
+function downloadBlob(blob, name) { try { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); return true; } catch (e) { return false; } }
+async function exportTable(rows, name) {
+  try { const X = await loadXLSX(); const ws = X.utils.aoa_to_sheet(rows); ws['!cols'] = rows[0].map((_, i) => ({ wch: i === 0 || i === 1 ? 24 : 30 })); const wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, 'Words'); const out = X.write(wb, { bookType: 'xlsx', type: 'array' }); if (downloadBlob(new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), name + '.xlsx')) return; }
+  catch (e) { }
+  const csv = '\ufeff' + rows.map(r => r.map(c => /[",;\n]/.test(String(c)) ? '"' + String(c).replace(/"/g, '""') + '"' : c).join(';')).join('\n');
+  if (!downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), name + '.csv')) openModal('exportWords');
+}
+function wordsTableRows(p) {
+  return [['English', 'Перевод', 'Категория', 'Транскрипция', 'Статус', 'Пример', 'Перевод примера', 'Мнемоника', 'Моя ассоциация', 'Добавлено', 'Следующее повторение']].concat(
+    p.words.map(w => [w.en, w.ru, w.cat, w.ipa || '', ST_LABEL[wStatus(w)], (w.examples[0] || {}).en || '', (w.examples[0] || {}).ru || '', w.mnemo || '', w.myMnemo || '', w.added || '', w.due || '']));
+}
+/* ---------- Бесплатный автоперевод (без AI) ---------- */
+const MM = q => 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(q) + '&langpair=en|ru';
+const badTr = x => !x || /[A-Za-z]{3,}/.test(x) || x.length > 60;
+async function freeFill(w) {
+  const q = w.en.trim(); if (!q) return false;
+  if (!w.ru) {
+    try {
+      const d = await (await fetch(MM(q))).json();
+      const cand = [((d.responseData || {}).translatedText) || ''].concat((d.matches || []).filter(m => norm(m.segment) === norm(q)).sort((a, b) => (b.quality || 0) - (a.quality || 0)).map(m => m.translation || ''));
+      const out = [];
+      cand.forEach(x => { x = String(x).trim().replace(/[.!]+$/, ''); if (badTr(x)) return; if (q === q.toLowerCase()) x = x.charAt(0).toLowerCase() + x.slice(1); if (!out.some(y => y.toLowerCase() === x.toLowerCase())) out.push(x); });
+      if (out.length) w.ru = out.slice(0, 3).join(', ');
+    } catch (e) { }
+  }
+  if (!q.includes(' ') && (!w.ipa || !w.examples.length)) {
+    try {
+      const r = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(q.toLowerCase()));
+      if (r.ok) {
+        const e = (await r.json())[0] || {}; const ms = e.meanings || [];
+        if (!w.ipa) w.ipa = e.phonetic || ((e.phonetics || []).find(x => x.text) || {}).text || '';
+        if (!w.pos && ms[0]) w.pos = ms[0].partOfSpeech || '';
+        if (!w.meaning && ms[0] && ms[0].definitions && ms[0].definitions[0]) w.meaning = '(EN) ' + ms[0].definitions[0].definition;
+        if (!w.examples.length) { const ex = ms.flatMap(m => m.definitions || []).find(x => x.example && x.example.length < 140); if (ex) { const ee = { en: ex.example, ru: '' }; try { const d2 = await (await fetch(MM(ex.example))).json(); const t = ((d2.responseData || {}).translatedText) || ''; if (!/[A-Za-z]{4,}/.test(t)) ee.ru = t; } catch (e2) { } w.examples = [ee]; } }
+        const syn = ms.flatMap(m => m.synonyms || []).slice(0, 3); if (!w.syn.length && syn.length) w.syn = syn;
+      }
+    } catch (e) { }
+  }
+  return !!w.ru;
+}
+async function autoFill(w) { if (AI) { try { await aiFillWord(w); if (w.ru) return true; } catch (e) { } } return freeFill(w); }
+async function ensureTranslations(ids) { const p = P(); const ws = ids.map(id => p.words.find(w => w.id === id)).filter(w => w && !w.ru); for (const w of ws) await autoFill(w); if (ws.length) save(); return ids.filter(id => { const w = p.words.find(x => x.id === id); return w && w.ru; }); }
+async function translateMissing() {
+  const p = P(), ws = p.words.filter(w => !w.ru); if (!ws.length) return;
+  UI.translating = true; let ok = 0;
+  for (let i = 0; i < ws.length; i++) { const el = $('#trProgress'); if (el) el.textContent = `Перевожу: ${i + 1} / ${ws.length}…`; if (await autoFill(ws[i])) ok++; if (i % 5 === 4) save(); }
+  UI.translating = false; save(); render();
+  toast(ok ? `🌐 Переведено слов: ${ok}${ok < ws.length ? ` · не удалось: ${ws.length - ok} (добавьте вручную)` : ''}` : 'Не удалось получить переводы — проверьте интернет или добавьте вручную');
+}
+const clickEn = text => esc(text).replace(/[A-Za-z][A-Za-z'’-]*/g, m => `<span class="rw" data-act="rword" data-arg="${m.replace(/[’']s$/, '')}">${m}</span>`);
+function pendingFor(key) { return UI.pending && UI.pending.key === key ? UI.pending.ids : []; }
+function markPending(key, id) { if (!UI.pending || UI.pending.key !== key) UI.pending = { key, ids: [] }; if (!UI.pending.ids.includes(id)) UI.pending.ids.push(id); }
+async function learnPending(key, after) {
+  const ids = pendingFor(key); if (!ids.length) return after();
+  toast('🌐 Готовлю карточки…');
+  const ready = await ensureTranslations(ids);
+  UI.pending = null;
+  if (!ready.length) { toast('Не удалось перевести слова — добавьте перевод вручную в «Моих словах»'); return after(); }
+  runFlash({ words: ready, after, afterLabel: 'Дальше к заданиям →' });
 }
 async function aiWordData(en, p = P()) {
   const prompt = `Ты — помощник в приложении для изучения английского. Ученик: ${learnerDesc(p)}, родной язык русский.
@@ -976,13 +1096,14 @@ function viewTopic() {
   if (!st.seen) { p.topics[t.id] = Object.assign(st, { seen: true }); }
   const ls = UI.lessonStep != null && planFor(p).steps[UI.lessonStep] && planFor(p).steps[UI.lessonStep].topic === t.id && !planFor(p).steps[UI.lessonStep].done;
   return `<button class="btn ghost small" data-act="go" data-arg="${ls ? 'home' : 'grammar'}">← ${ls ? 'Главная' : 'Grammar World'}</button>
-  ${ls ? `<div class="notice">📘 <b>Урок дня.</b> Прочитай теорию, послушай примеры и посмотри типичные ошибки. Потом нажми кнопку — дальше будет Grammar Battle по этой теме. <button class="btn small" data-act="lessonDone">✅ Я изучил(а) тему</button></div>` : ''}
+  ${ls ? `<div class="notice">📘 <b>Урок дня.</b> Прочитай теорию, послушай примеры и посмотри типичные ошибки. Нажимай на незнакомые английские слова — они попадут в список, и перед заданиями ты сначала их выучишь. ${pendingFor('topic:' + t.id).length ? `<b>Отмечено слов: ${pendingFor('topic:' + t.id).length}</b> (${esc(pendingFor('topic:' + t.id).map(id => (p.words.find(w => w.id === id) || {}).en).join(', '))}). ` : ''}<button class="btn small" data-act="lessonDone">${pendingFor('topic:' + t.id).length ? '🧠 Выучить слова, затем задания' : '✅ Я изучил(а) тему'}</button></div>` : ''}
   <div class="card topic-head"><div><h1>${t.name}</h1><div class="muted">${esc(t.ru)} · уровень ${t.level}</div></div><div class="th-st"><b>${st.best || 0}%</b><small>лучший результат</small>${acc(st) != null ? `<small>точность ${acc(st)}%</small>` : ''}</div></div>
+  ${!ls && pendingFor('topic:' + t.id).length ? `<div class="notice">🧠 Отмечено слов: <b>${pendingFor('topic:' + t.id).length}</b>. <button class="btn small" data-act="learnPendingTopic">Выучить их сейчас</button></div>` : ''}
   <div class="row gap wrap"><button class="btn" data-act="gameT" data-arg="battle">⚔️ Grammar Battle</button><button class="btn ghost" data-act="gameT" data-arg="builder">🧱 Собери предложение</button>${t.errors.length ? '<button class="btn ghost" data-act="gameT" data-arg="error">🔍 Найди ошибку</button>' : ''}${AI ? `<button class="btn ghost" data-act="aiTopic" data-arg="${t.id}">🤖 Объясни проще</button>` : ''}</div>
   <div class="topic-body">
-    <div class="card"><h3>Что это</h3><p>${esc(t.intro)}</p><h3>Когда используется</h3><ul>${t.use.map(u => `<li>${esc(u)}</li>`).join('')}</ul></div>
+    <div class="card"><h3>Что это</h3><p>${esc(t.intro)}</p><h3>Когда используется</h3><ul>${t.use.map(u => `<li>${clickEn(u)}</li>`).join('')}</ul></div>
     <div class="card"><h3>Формула</h3><table class="formula">${t.formula.map(f => `<tr><th>${esc(f[0])}</th><td>${esc(f[1])}</td></tr>`).join('')}</table>${t.markers.length ? `<h3>Слова-маркеры</h3><div class="chips">${t.markers.map(m => `<span>${esc(m)}</span>`).join('')}</div>` : ''}${t.tip ? `<div class="tip">💡 ${esc(t.tip)}</div>` : ''}</div>
-    <div class="card"><h3>Примеры с переводом</h3>${t.examples.map(e => `<div class="ex"><span>${esc(sentence(e[0]))}</span> <button class="icon-btn sm" data-act="say" data-arg="${esc(sentence(e[0]))}">🔊</button><div class="muted small">${esc(e[1])}</div></div>`).join('')}</div>
+    <div class="card"><h3>Примеры с переводом</h3>${t.examples.map(e => `<div class="ex"><span>${clickEn(sentence(e[0]))}</span> <button class="icon-btn sm" data-act="say" data-arg="${esc(sentence(e[0]))}">🔊</button><div class="muted small">${esc(e[1])}</div></div>`).join('')}</div>
     ${t.errors.length ? `<div class="card"><h3>Типичные ошибки</h3>${t.errors.map(e => `<div class="err-ex"><div class="bad-t">✗ ${esc(e[0])}</div><div class="ok-t">✓ ${esc(e[2])}</div><div class="muted small">${esc(e[3])}</div></div>`).join('')}</div>` : ''}
     ${t.compare ? `<div class="card"><h3>Сравнение с похожими временами</h3><p>${esc(t.compare)}</p></div>` : ''}
     <div class="card"><h3>Практика из реальной жизни</h3><p>${t.tense ? `Напиши 3 предложения о себе в ${t.name}: ${esc(t.use[0].split(':')[0].toLowerCase())}.` : 'Составь 3 своих предложения на эту тему.'}</p>${AI ? `<button class="btn small" data-act="practiceTopic" data-arg="${t.id}">✍️ Написать и проверить с AI</button>` : '<p class="muted small">Подключите AI (откройте приложение в Claude), чтобы он проверял ваши предложения.</p>'}</div>
@@ -1014,7 +1135,7 @@ function viewRead() {
   const texts = D.READING.filter(r => !kid || r.kid).concat(p.aiTexts || []);
   return sec('📖 Reading', `<div class="games">${texts.map(r => `<button class="gcard" data-act="go" data-arg="reader:${r.id}"><span class="g-ico">${(p.readDone || {})[r.id] ? '✅' : r.ielts ? '🎓' : '📄'}</span><b>${esc(r.title)}</b><small>Уровень ${r.level}${r.ielts ? ' · IELTS' : ''}${(p.readDone || {})[r.id] ? ' · прочитано' : ''}</small></button>`).join('')}
   ${AI ? `<button class="gcard ai" data-act="aiText"><span class="g-ico">✨</span><b>Новый текст с AI</b><small>Из ваших слов, уровень ${p.level}</small></button>` : ''}</div>
-  <p class="muted small">Нажми на любое слово в тексте, чтобы послушать его и добавить в свой словарь — это кнопка «Я не знаю это слово».</p><div id="aiTextStatus"></div>`);
+  <p class="muted small">Нажми на любое слово в тексте, чтобы послушать его и добавить в свой словарь. Отмеченные слова ты выучишь до вопросов.</p><div id="aiTextStatus"></div>`);
 }
 function viewReader() {
   const p = P(), id = String(UI.arg).replace('reader:', ''); const r = D.READING.concat(p.aiTexts || []).find(x => x.id === id); if (!r) return viewRead();
@@ -1023,7 +1144,8 @@ function viewReader() {
   UI.readQ = UI.readQ && UI.readQ.id === id ? UI.readQ : { id, ans: {} };
   return `<button class="btn ghost small" data-act="go" data-arg="read">← Тексты</button>
   <div class="card reader"><div class="row between"><h2>${esc(r.title)}</h2>${r.ielts ? '<span class="pill">IELTS-формат · ' + r.text.split(/\s+/).length + ' слов</span>' : ''}<button class="btn small ghost" data-act="say" data-arg="${esc(r.text)}">🔊 Слушать текст</button></div><p class="read-text">${words}</p></div>
-  ${r.q && r.q.length ? `<div class="card"><h3>Вопросы на понимание</h3>${r.ielts ? '<p class="muted small">True — так сказано в тексте; False — в тексте сказано обратное; Not Given — в тексте об этом нет информации.</p>' : ''}${r.q.map((q, i) => { const a = UI.readQ.ans[i]; return `<div class="rq"><b>${i + 1}. ${esc(q[0])}</b><div class="opts sm">${q[2].map(o => { let c = ''; if (a != null) { if (o === q[1]) c = 'right'; else if (o === a) c = 'wrong'; } return `<button class="opt ${c}" data-act="readAns" data-arg="${i}|${esc(o)}" ${a != null ? 'disabled' : ''}>${esc(o)}</button>`; }).join('')}</div></div>`; }).join('')}</div>` : ''}`;
+  ${pendingFor('read:' + r.id).length ? `<div class="card accent-card"><h3>🧠 Сначала выучи отмеченные слова (${pendingFor('read:' + r.id).length})</h3><p class="muted">${esc(pendingFor('read:' + r.id).map(id => (p.words.find(w => w.id === id) || {}).en).join(', '))}</p><p class="small muted">Вопросы к тексту откроются после изучения слов.</p><div class="row gap"><button class="btn" data-act="learnPendingRead" data-arg="${r.id}">Выучить слова</button><button class="btn ghost small" data-act="skipPending">Пропустить</button></div></div>` : ''}
+  ${r.q && r.q.length && !pendingFor('read:' + r.id).length ? `<div class="card"><h3>Вопросы на понимание</h3>${r.ielts ? '<p class="muted small">True — так сказано в тексте; False — в тексте сказано обратное; Not Given — в тексте об этом нет информации.</p>' : ''}${r.q.map((q, i) => { const a = UI.readQ.ans[i]; return `<div class="rq"><b>${i + 1}. ${esc(q[0])}</b><div class="opts sm">${q[2].map(o => { let c = ''; if (a != null) { if (o === q[1]) c = 'right'; else if (o === a) c = 'wrong'; } return `<button class="opt ${c}" data-act="readAns" data-arg="${i}|${esc(o)}" ${a != null ? 'disabled' : ''}>${esc(o)}</button>`; }).join('')}</div></div>`; }).join('')}</div>` : ''}`;
 }
 
 /* ---------- AI Teacher ---------- */
@@ -1256,7 +1378,7 @@ function modalHTML() {
   else if (m.kind === 'export') inner = `<h3>Резервная копия</h3><p class="muted small">Скопируйте текст и сохраните в заметках или файле.</p><textarea id="expTxt" rows="10" readonly>${esc(JSON.stringify(S))}</textarea><button class="btn" data-act="copy" data-arg="expTxt">Копировать</button>`;
   else if (m.kind === 'exportWords') inner = `<h3>Экспорт словаря</h3><textarea id="expW" rows="12" readonly>${esc(p.words.map(w => w.en + ' - ' + w.ru).join('\n'))}</textarea><button class="btn" data-act="copy" data-arg="expW">Копировать</button>`;
   else if (m.kind === 'importAll') inner = `<form data-form="importAll"><h3>Восстановить из копии</h3><p class="muted small">Вставьте текст резервной копии. Текущие данные будут заменены.</p><textarea name="j" rows="8"></textarea><button class="btn">Восстановить</button></form>`;
-  else if (m.kind === 'rword') inner = `<h3>${esc(m.w)} <button class="icon-btn" data-act="say" data-arg="${esc(m.w)}">🔊</button></h3>${p.words.some(x => norm(x.en) === norm(m.w)) ? '<p>✓ Это слово уже есть в вашем словаре.</p>' : `<p class="muted">Добавить слово в мой словарь?</p><button class="btn" data-act="addRword" data-arg="${esc(m.w)}">+ Я не знаю это слово</button>`}`;
+  else if (m.kind === 'rword') { const ex = p.words.find(x => norm(x.en) === norm(m.w)); inner = `<h3>${esc(m.w)} <button class="icon-btn" data-act="say" data-arg="${esc(m.w)}">🔊</button></h3>${ex ? `<p>✓ Слово уже в словаре${ex.ru ? ': <b>' + esc(ex.ru) + '</b>' : ''}. Статус: ${ST_LABEL[wStatus(ex)]}.</p>${UI.wordCtx && wStatus(ex) !== 'mastered' ? `<button class="btn" data-act="addRword" data-arg="${esc(m.w)}">🧠 Добавить к изучению перед заданиями</button>` : ''}` : `<p class="muted">Добавить слово в словарь${UI.wordCtx ? ' и выучить его перед заданиями' : ''}? Перевод подставится автоматически.</p><button class="btn" data-act="addRword" data-arg="${esc(m.w)}">+ Я не знаю это слово</button>`}`; }
   else if (m.kind === 'writeTask') { const t = Cloud.tasks.find(x => x.id === m.id); inner = `<form data-form="writeTask" data-arg="${m.id}"><h3>✍️ ${esc(t.title)}</h3><p>${esc(t.prompt || '')}</p><textarea name="t" rows="8" required placeholder="Пиши по-английски…"></textarea><div class="row gap"><button class="btn">Отправить учителю</button><button type="button" class="btn ghost" data-act="modalClose">Отмена</button></div></form>`; }
   else if (m.kind === 'ai') inner = `<h3>${esc(m.title || '🤖 AI Teacher')}</h3><div class="ai-box" id="aiModalBox">${m.text ? md(m.text) : 'Думаю…'}</div>${m.form ? `<form data-form="aiPractice" data-arg="${m.topic}" class="ans-form col"><textarea name="t" rows="4" placeholder="Напиши свои предложения…"></textarea><button class="btn">Проверить</button></form>` : ''}`;
   else if (m.kind === 'review') inner = Teacher.reviewHTML(m.id);
@@ -1380,7 +1502,7 @@ async function aiText() {
 const ACT = {
   go: a => { if (a.startsWith('reader:')) return go('reader', a); if (a.startsWith('results:')) return go('results', a.slice(8)); go(a); },
   makeMine: () => { const p = newProfile('adult', { name: 'Я', uid: Cloud.uid || undefined }); S.profiles.push(p); S.activeId = p.id; save(p); go('settings'); },
-  lessonDone: () => { const i = UI.lessonStep; UI.lessonStep = null; completeStep(i); save(); const p = P(), pl = planFor(p); let nx = pl.steps.findIndex((s, k) => k > i && !s.done); if (nx < 0) nx = pl.steps.findIndex(s => !s.done); if (nx >= 0) runStep(nx); else go('home'); },
+  lessonDone: () => { const i = UI.lessonStep, tid = UI.arg; if (pendingFor('topic:' + tid).length) return learnPending('topic:' + tid, () => ACT.lessonDone()); UI.lessonStep = null; completeStep(i); save(); const p = P(), pl = planFor(p); let nx = pl.steps.findIndex((s, k) => k > i && !s.done); if (nx < 0) nx = pl.steps.findIndex(s => !s.done); if (nx >= 0) runStep(nx); else go('home'); },
   menu: () => { UI.menu = true; render(); }, menuClose: () => { UI.menu = false; render(); },
   switchP: a => { S.activeId = a; UI.chat = null; save(null); render(); },
   step: a => runStep(+a),
@@ -1415,10 +1537,23 @@ const ACT = {
   aiFill: aiFillForm,
   aiFillExisting: async a => { const w = P().words.find(x => x.id === a); toast('✨ AI дополняет слово…'); try { await aiFillWord(w); save(); render(); toast('✓ Слово дополнено'); } catch (e) { toast(aiErr(e)); } },
   addWotd: () => { const p = P(), d = wotd(p); const w = mkWord({ en: d.en, ru: d.ru, examples: d.ex ? [{ en: d.ex, ru: '' }] : [], own: true, cat: isKid(p) ? 'Animals' : 'General Vocabulary', emoji: d.emoji || '' }); const seed = (isKid(p) ? D.KID_WORDS : D.ADULT_WORDS).find(a => a[0] === d.en); if (seed) Object.assign(w, { mnemo: seed[5], ipa: seed[3] }); p.words.unshift(w); checkAch(p); save(); render(); toast('Слово добавлено в словарь'); if (AI && !w.mnemo) aiFillWord(w).then(() => { save(); render(); }).catch(() => { }); },
-  rword: a => { if (!a) return; speak(a); openModal('rword', { w: a }); },
-  addRword: async a => { const p = P(); const w = mkWord({ en: a.toLowerCase(), own: true, cat: allCats(p)[0] }); p.words.unshift(w); UI.modal = null; save(); render(); toast(`«${esc(a)}» добавлено в словарь`); if (AI) { try { await aiFillWord(w); save(); render(); } catch (e) { openModal('editWord', { id: w.id }); } } else openModal('editWord', { id: w.id }); },
+  rword: a => { if (!a) return; speak(a); UI.wordCtx = UI.game ? null : UI.view === 'topic' ? 'topic:' + UI.arg : UI.view === 'reader' ? 'read:' + String(UI.arg).replace('reader:', '') : null; openModal('rword', { w: a }); },
+  translateMissing: () => translateMissing(),
+  flashAfter: () => { const f = UI.game && UI.game.after; UI.game = null; save(); if (f) f(); else render(); },
+  learnPendingTopic: () => { const id = UI.arg; learnPending('topic:' + id, () => go('topic', id)); },
+  learnPendingRead: a => learnPending('read:' + a, () => go('reader', 'reader:' + a)),
+  skipPending: () => { UI.pending = null; render(); },
+  addRword: async a => {
+    const p = P(), ctx = UI.wordCtx; let w = p.words.find(x => norm(x.en) === norm(a));
+    if (!w) { w = mkWord({ en: a.toLowerCase(), own: true, cat: allCats(p)[0] }); p.words.unshift(w); }
+    if (ctx) markPending(ctx, w.id);
+    UI.modal = null; save(); render(); toast(`«${esc(a)}» добавлено${ctx ? ' — выучишь перед заданиями' : ' в словарь'}`);
+    if (!w.ru) { const ok = await autoFill(w); save(); if (UI.view !== 'reader' && UI.view !== 'topic' || !UI.game) render(); toast(ok ? `🌐 ${esc(w.en)} — ${esc(w.ru)}` : 'Перевод не найден — добавьте вручную'); }
+  },
   readAns: a => { const [i, o] = a.split('|'); UI.readQ.ans[i] = o; const pp = P(); pp.readDone = pp.readDone || {}; const r = D.READING.concat(P().aiTexts || []).find(x => x.id === UI.readQ.id); if (r && r.q[i][1] === o) addXP(10); else P().stats.bad++; if (Object.keys(UI.readQ.ans).length === r.q.length) { pp.readDone[r.id] = today(); toast('📖 Текст прочитан! +' + (r.ielts ? 30 : 15) + ' XP', 'ach'); addXP(r.ielts ? 30 : 15, pp, true); const st = planFor(P()).steps.findIndex(s => s.k === 'read' && !s.done); if (st >= 0) completeStep(st); } save(); render(); },
   aiText,
+  exportXlsx: () => { const p = P(); exportTable(wordsTableRows(p), 'english-quest-' + (p.name || 'words') + '-' + today()); toast('⬇ Словарь скачивается'); },
+  tplDownload: () => exportTable([['English', 'Перевод', 'Категория', 'Пример', 'Перевод примера'], ['to postpone', 'откладывать', 'Work', 'We need to postpone the meeting.', 'Нам нужно перенести встречу.'], ['luggage', 'багаж', 'Travel', '', '']], 'english-quest-шаблон'),
   aiMode: a => { UI.chat = { mode: a, messages: [], busy: false }; render(); },
   scenario: a => startScenario(a),
   aiSuggest: a => sendChat(a),
@@ -1467,17 +1602,15 @@ const FORMS = {
     if (isNew && p.words.some(x => norm(x.en) === norm(data.en))) return toast('Такое слово уже есть в словаре');
     if (isNew) { w = mkWord(Object.assign(data, { own: true })); p.words.unshift(w); } else Object.assign(w, data);
     UI.modal = null; checkAch(p); save(); render(); toast(isNew ? `«${esc(w.en)}» добавлено — упражнения из него уже готовы` : 'Сохранено');
-    if (isNew && AI && (!w.ru || !w.mnemo || !w.examples.length)) { try { await aiFillWord(w); save(); render(); } catch (e) { } }
+    if (isNew && (AI ? (!w.ru || !w.mnemo || !w.examples.length) : (!w.ru || !w.examples.length))) { await autoFill(w); save(); render(); }
   },
   import: async f => {
-    const p = P(), cat = f.cat.value; const lines = f.list.value.split('\n').map(l => l.trim()).filter(Boolean).slice(0, 200); let n = 0; const added = [];
-    lines.forEach(l => { const a = l.split(/\s+[-–—=:]\s+|\t/); const en = a[0].trim(); if (!en || p.words.some(x => norm(x.en) === norm(en))) return; const w = mkWord({ en, ru: (a[1] || '').trim(), cat, own: true }); p.words.unshift(w); added.push(w); n++; });
-    save(); toast(`Добавлено слов: ${n}`);
-    if (f.ai && f.ai.checked && AI && added.length) {
-      const st = $('#impStatus');
-      for (let i = 0; i < added.length; i++) { if (st) st.textContent = `✨ AI дополняет слова: ${i + 1} / ${added.length}…`; try { await aiFillWord(added[i]); save(); } catch (e) { if (e && (e.code === 'not_granted' || e.code === 'rate_limited')) break; } }
-    }
-    UI.modal = null; checkAch(p); save(); render();
+    const fileIn = $('#impFile'); let items = [];
+    if (fileIn && fileIn.files && fileIn.files[0]) { const info = $('#impFileInfo'); try { if (info) info.textContent = 'Читаю таблицу…'; items = rowsToWords(await readTableFile(fileIn.files[0])); } catch (e) { if (info) info.textContent = 'Не удалось прочитать файл. Сохраните таблицу как .xlsx или .csv и попробуйте ещё раз.'; return; } }
+    const lines = f.list.value.split('\n').map(l => l.trim()).filter(Boolean);
+    lines.forEach(l => { const a = l.includes('\t') ? l.split('\t') : l.split(/\s+[-–—=:]\s+/); items.push({ en: (a[0] || '').trim(), ru: (a[1] || '').trim(), cat: (a[2] || '').trim() }); });
+    if (!items.length) return toast('Выберите файл или вставьте слова');
+    await importWords(items, f.cat.value, !!(f.ai && f.ai.checked));
   },
   importAll: f => { try { const s = JSON.parse(f.j.value); if (!s.profiles) throw 0; S = s; S.profiles.forEach(p => p.updatedAt = Date.now()); UI.modal = null; save(null); render(); toast('Данные восстановлены'); } catch (e) { toast('Не удалось прочитать копию'); } },
   chat: f => { const v = f.t.value; f.t.value = ''; sendChat(v); },
@@ -1499,6 +1632,7 @@ document.addEventListener('input', e => { const el = e.target; if (el.dataset.in
 document.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset.change === 'vcat') { UI.vocab.cat = el.value; render(); }
+  if (el.id === 'impFile' && el.files[0]) { const info = $('#impFileInfo'); readTableFile(el.files[0]).then(r => { const ws = rowsToWords(r); if (info) info.innerHTML = ws.length ? `Найдено слов: <b>${ws.length}</b> (например: ${esc(ws.slice(0, 3).map(w => w.en + (w.ru ? ' — ' + w.ru : '')).join('; '))}). Нажмите «Добавить слова».` : 'В файле не найдено слов. Проверьте, что английские слова в первой колонке.'; }).catch(() => { if (info) info.textContent = 'Не удалось прочитать файл. Сохраните как .xlsx или .csv.'; }); }
   if (el.dataset.change === 'ttype') { const f = el.form; $$('.tt', f).forEach(x => x.classList.toggle('hidden', !x.classList.contains('tt-' + el.value))); }
   if (el.name === 'cat' && el.form && el.form.dataset.form === 'saveWord') { const nc = $('.newcat', el.form); if (nc) nc.classList.toggle('hidden', el.value !== '__new'); }
 });
