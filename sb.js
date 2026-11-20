@@ -185,7 +185,7 @@
     const user = { role: async () => ROLE, isOwner: async () => ROLE === 'owner' || ROLE === 'member', canEdit: async () => ROLE !== 'teacher', can: async () => !!ROLE, id: async () => USER.id, me: async () => ({ id: USER.id, name: USER.email }) };
     window.claude = { use: async n => n === 'db' ? db : n === 'user' ? user : n === 'sample' ? ((await aiCheck()) ? sample : null) : null };
     realtime();
-    const s = document.createElement('script'); s.src = 'app.js?v=' + (window.EQ_VER || Date.now()); s.onload = () => loadAccess(); document.body.appendChild(s);
+    const s = document.createElement('script'); s.src = 'app.js'; s.onload = () => loadAccess(); document.body.appendChild(s);
   }
 
   /* ---------- init ---------- */
